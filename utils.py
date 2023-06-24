@@ -1,3 +1,4 @@
+import dataclasses
 from sys import platform as sys_pf
 
 import matplotlib
@@ -7,6 +8,14 @@ import torch
 if sys_pf == 'darwin':
     matplotlib.use("TkAgg")
 from matplotlib import pyplot as plt
+
+
+@dataclasses.dataclass
+class DataSample:
+    images: torch.Tensor
+    motor_context: torch.Tensor
+    text_context_ids: torch.Tensor
+    labels: torch.Tensor
 
 
 def embeddings_to_tokens(embeddings):
@@ -19,26 +28,31 @@ def embeddings_to_tokens(embeddings):
 def concatenate_tokens(input_tokens, embedding_tokens):
     # Concatenate the input tokens and the embedding tokens
     # (This is a placeholder and should be replaced with your actual method)
-    concatenated_tokens = torch.cat([input_tokens, embedding_tokens], dim=1)
+    # input_tokens [3x1,128], embedding_tokens [3,64]
+    concatenated_tokens = torch.cat((input_tokens, embedding_tokens.unsqueeze(1)), dim=2)
     return concatenated_tokens
 
 
-def process_batch(batch, trace_model, device):
-    images, labels, text_input = batch
-    images = images.to(device)
+def process_batch(batch: DataSample, device):
+    # A batch is [batch, time, ...]
 
-    # The text_input is already tokenized, so we just need to send the input_ids to the device
-    input_tokens = text_input['input_ids'].to(device)
+    images = batch.images.to(device)
+    text_input = batch.text_context_ids
+    labels = batch.labels
+    motor_context = batch.motor_context
 
-    embeddings = trace_model(images)  # Generate trace embeddings
+    # Turn the timestep into another batch dimension
 
-    # Convert embeddings to tokens
-    embedding_tokens = embeddings_to_tokens(embeddings)
+    # [batch, time, ...]  -> [batch * time, ...]
 
-    # Concatenate the embedding tokens with the input tokens
-    input_tokens = concatenate_tokens(input_tokens, embedding_tokens)
+    images = images.view(-1, *images.shape[2:])
+    text_input = text_input.view(-1, *text_input.shape[2:])
+    motor_context = motor_context.view(-1, *motor_context.shape[2:])
+    labels = labels.view(-1)
 
-    return input_tokens, labels
+    new_batch = DataSample(images=images, motor_context=motor_context, text_context_ids=text_input, labels=labels)
+
+    return new_batch, labels
 
 
 # ---
