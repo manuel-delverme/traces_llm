@@ -9,8 +9,15 @@ from torch.utils.data import Dataset
 import constants
 from utils import DataSample
 
-from torchvision import transforms
-from torch import Tensor
+
+def resample_stroke(stroke, num_samples=100):
+    x, y, t = stroke.T
+    new_t = np.linspace(t[0], t[-1], num_samples)
+    return np.stack([np.interp(new_t, t, x), np.interp(new_t, t, y)], axis=1)
+
+
+def normalize_trace(trace, min_x, max_x, min_y, max_y):
+    return np.stack([(trace[:, 0] - min_x) / (max_x - min_x), (trace[:, 1] - min_y) / (max_y - min_y)], axis=1)
 
 
 class MultimodalTransform:
@@ -19,99 +26,39 @@ class MultimodalTransform:
         self.trace_transform = trace_transform
 
     def __call__(self, images, motor_traces):
-        image = self.image_transform(images)
-        trace = self.trace_transform(motor_traces)
-        return image, trace
+        return self.image_transform(images), self.trace_transform(motor_traces)
 
 
-# TODO: maybe resample strokes to be uniform in space?
-def resample_stroke(stroke, num_samples=100):
-    """
-    Resamples a stroke to be uniform in time.
-
-    stroke: numpy array of shape (n, 3) where n is the number of points.
-            Each row is (x, y, timestamp).
-    num_samples: number of samples to interpolate the stroke to.
-
-    returns: resampled_stroke, numpy array of shape (num_samples, 2)
-             where each row is (x, y).
-    """
-
-    # Extract x, y coordinates and timestamps
-    x, y, t = stroke.T
-
-    # Create a new timeline that's uniform
-    new_t = np.linspace(t[0], t[-1], num_samples)
-
-    # Interpolate x and y coordinates at the new timeline
-    new_x = np.interp(new_t, t, x)
-    new_y = np.interp(new_t, t, y)
-
-    # Stack x and y to create the resampled stroke
-    resampled_stroke = np.stack([new_x, new_y], axis=1)
-
-    # plt.plot(stroke[:, 0], stroke[:, 1], 'bo')
-    # plt.plot(resampled_stroke[:, 0], resampled_stroke[:, 1], 'ro')
-    # plt.show()
-
-    return resampled_stroke
-
-
-# Function to normalize a single trace
-def normalize_trace(trace, min_x, max_x, min_y, max_y):
-    """
-    Normalize the x, y coordinates of a single trace to be between 0 and 1.
-
-    trace: numpy array of shape (n, 2) where n is the number of points.
-           Each row is (x, y).
-
-    min_x, max_x, min_y, max_y: The minimum and maximum values of x and y respectively,
-                                to be used for normalization.
-
-    returns: normalized_trace, numpy array of shape (n, 2) where each row is (normalized_x, normalized_y).
-    """
-    normalized_x = (trace[:, 0] - min_x) / (max_x - min_x)
-    normalized_y = (trace[:, 1] - min_y) / (max_y - min_y)
-
-    normalized_trace = np.stack([normalized_x, normalized_y], axis=1)
-
-    return normalized_trace
-
-
-class OmniglotDataset:
-    def __init__(self, img_dir, stroke_dir, transforms: MultimodalTransform, alphabet_name="Latin"):
+class OmniglotDataset(Dataset):
+    def __init__(self, img_dir: str, stroke_dir: str, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
         self.img_dir = os.path.join(img_dir, alphabet_name)
         self.stroke_dir = os.path.join(stroke_dir, alphabet_name)
+        self.dataset_size = self._calculate_dataset_size()
+        self.transforms = transforms
 
+    def _calculate_dataset_size(self) -> int:
         num_images = sum([len(subfolder) for subfolder in os.listdir(self.img_dir)])
         num_strokes = sum([len(subfolder) for subfolder in os.listdir(self.stroke_dir)])
         assert num_images == num_strokes
-        self.dataset_size = num_images
-        self.transforms = transforms
+        return num_images
 
-    @staticmethod
-    def _load_motor(fn):
-        motor = []
+    def _load_motor(self, fn: str) -> np.ndarray:
         with open(fn, 'r') as fid:
-            lines = fid.readlines()
-        lines = [l.strip() for l in lines]
+            lines = [l.strip() for l in fid.readlines()]
+        motor = []
+        stk = []
         for myline in lines:
-            if myline == 'START':  # beginning of character
-                stk = []
-            elif myline == 'BREAK':  # break between strokes
-                stk = np.array(stk)
-                motor.append(stk)  # add to list of strokes
-                stk = []
+            if myline in ['START', 'BREAK']:
+                if stk:
+                    motor.append(np.array(stk))
+                    stk = []
             else:
-                arr = np.fromstring(myline, dtype=float, sep=',')
-                stk.append(arr)
+                stk.append(np.fromstring(myline, dtype=float, sep=','))
         return motor
 
     @staticmethod
-    def _load_img(fn):
-        I = plt.imread(fn)
-        I = np.array(I, dtype=bool)
-        return I
+    def _load_img(fn: str) -> np.ndarray:
+        return np.array(plt.imread(fn), dtype=bool)
 
     def __getitem__(self, token: str):
         # TODO: encode somehow the trace repetition, right now we always use the first one
@@ -281,10 +228,10 @@ class TextTraceDataset(Dataset):
                 char_context, (constants.TOKEN_CONTEXT_LEN - len(char_context), 0), 'constant',
                 constant_values=constants.TEXT_PADDING_ID)
 
-            left_padded_images = torch.zeros(constants.CHARS_PER_TOKEN, *token_images.shape[1:])
+            left_padded_images = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_images.shape[1:])
             left_padded_images[-len(token_images):] = token_images
 
-            left_padded_motor_traces = torch.zeros(constants.CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
+            left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
             left_padded_motor_traces[-len(token_motor_traces):] = token_motor_traces
 
             text_so_far.append(token_idx)

@@ -10,10 +10,8 @@ from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, POINTS_IN_MOTOR_SEQUENCE
 from utils import DataSample
 
 
-# Define Trace Embedding Model
 class TraceEmbeddingModel(nn.Module):
     def __init__(self, time_steps):
-        # For now time steps is channels
         super(TraceEmbeddingModel, self).__init__()
         self.conv1 = nn.Conv2d(time_steps, 32, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)

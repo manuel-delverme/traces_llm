@@ -33,26 +33,21 @@ def concatenate_tokens(input_tokens, embedding_tokens):
     return concatenated_tokens
 
 
-def process_batch(batch: DataSample, device):
-    # A batch is [batch, time, ...]
-
-    images = batch.images.to(device)
-    text_input = batch.text_context_ids
-    labels = batch.labels
-    motor_context = batch.motor_context
-
+def flatten_batch_and_sequence_dims(batch: DataSample, device):
     # Turn the timestep into another batch dimension
-
     # [batch, time, ...]  -> [batch * time, ...]
 
-    images = images.view(-1, *images.shape[2:])
-    text_input = text_input.view(-1, *text_input.shape[2:])
-    motor_context = motor_context.view(-1, *motor_context.shape[2:])
-    labels = labels.view(-1)
+    images = batch.images.flatten(start_dim=0, end_dim=1)
+    text_input = batch.text_context_ids.flatten(start_dim=0, end_dim=1)
+    motor_context = batch.motor_context.flatten(start_dim=0, end_dim=1)
+    labels = batch.labels.flatten(start_dim=0, end_dim=1)
 
-    new_batch = DataSample(images=images, motor_context=motor_context, text_context_ids=text_input, labels=labels)
-
-    return new_batch, labels
+    return DataSample(
+        images=images.to(device),
+        motor_context=motor_context.to(device),
+        text_context_ids=text_input.to(device),
+        labels=labels.to(device),
+    )
 
 
 # ---
