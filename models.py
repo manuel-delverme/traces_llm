@@ -6,7 +6,7 @@ from torch.nn import functional as F
 from transformers import GPT2LMHeadModel
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
-from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, POINTS_IN_MOTOR_SEQUENCE
+from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, POINTS_IN_MOTOR_SEQUENCE, TOKEN_CONTEXT_LEN
 from utils import DataSample
 
 
@@ -55,31 +55,50 @@ class MultimodalLLM(nn.Module):
         self.downscale_vocab = nn.Sequential(
             nn.Linear(GPT2_VOCAB_SIZE, VOCAB_SIZE),
         )
+
         self.prediction_head = nn.Sequential(
-            nn.Linear(128 + 128 + VOCAB_SIZE, 128),
+            nn.Linear(5220, 1024),
             nn.ReLU(),
-            nn.Linear(128, VOCAB_SIZE),
+            nn.Linear(1024, VOCAB_SIZE),
         )
 
     def forward(self, batch: DataSample):
-        image_features = self.image_encoder(batch.images)
+        # images is a tensor of shape (batch_size, seq_len, 1, 28, 28) reshape to process all images at once
+        batch_size, seq_len, _, _, _ = batch.images.shape
+
+        flat_images = batch.images.flatten(start_dim=0, end_dim=1)
+        image_features = self.image_encoder(flat_images)
+        image_features = image_features.unflatten(dim=0, sizes=(batch_size, seq_len))
 
         # motor_context is a tensor of shape (batch_size, MOTOR_CONTEXT_LEN, 2)
         # We are going to feed it into a CNN, so we need to add a channel dimension
         # swap len and 2
 
         # Transpose to have channels as the second dimension: (batch_size, 2, MOTOR_CONTEXT_LEN)
-        motor_context = batch.motor_context.transpose(1, 2)
+        flatten_motor_context = batch.motor_context.flatten(start_dim=0, end_dim=1)
+        motor_context = flatten_motor_context.transpose(1, 2)
 
         motor_features = self.motor_encoder(motor_context)
 
+        motor_features = motor_features.unflatten(dim=0, sizes=(batch_size, seq_len, -1))
+
         llm_out: CausalLMOutputWithCrossAttentions = self.language_model(batch.text_context_ids)
+
+        assert llm_out.logits.shape == (batch_size, TOKEN_CONTEXT_LEN, GPT2_VOCAB_SIZE)
+
         text_features = llm_out.logits[:, -1, :]  # TODO: check this
 
         # Logits is a tensor of shape (batch_size, sequence_length, vocab_size)
         # Vocabulary size is ~50k for GPT2, ours is VOCAB_SIZE, so we need to project it down to VOCAB_SIZE
         text_features = self.downscale_vocab(text_features)
 
-        features = torch.cat((image_features, motor_features, text_features), dim=1)
+        # TODO:
+        # text has no seq len, it's one token per token
+        # cat doesn't work, cat the two tensors, then cat the result with the third tensor
+        features = torch.cat((
+            image_features.flatten(start_dim=1),
+            motor_features.flatten(start_dim=1),
+            text_features
+        ), dim=1)
         logits = self.prediction_head(features)
         return logits

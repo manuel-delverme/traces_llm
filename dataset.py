@@ -193,8 +193,6 @@ class TextTraceDataset(Dataset):
         return min(len(self.omniglot_dataset), len(self.text_dataset))
 
     def __getitem__(self, idx):
-        print(self.text_dataset[idx])
-
         sentence_to_encode = self.text_dataset[idx]
         encoded_text = self.tokenizer.encode_plus(
             sentence_to_encode, truncation=True, max_length=constants.TOKEN_CONTEXT_LEN, padding='max_length',
@@ -234,7 +232,8 @@ class TextTraceDataset(Dataset):
             left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
             left_padded_motor_traces[-len(token_motor_traces):] = token_motor_traces
 
-            text_so_far.append(token_idx)
+            # TODO: the mod is temporary
+            text_so_far.append(token_idx % constants.VOCAB_SIZE)
 
             images.append(left_padded_images)
             motor_contexts.append(left_padded_motor_traces)

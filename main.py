@@ -19,20 +19,17 @@ class Trainer:
         self.model.train()
         for batch in data_loader:
             batch = DataSample(**batch)
-            # viz.visualize_one_sample(batch)
 
             # Images is of shape (batch_size, seq_len, CHARS_PER_TOKEN, image_channels, image_height, image_width)
             batch = flatten_batch_and_sequence_dims(batch, self.device)
             # Images is of shape (batch_size, CHARS_PER_TOKEN, image_channels, image_height, image_width)
 
-            viz.visualize_one_sample(batch, num_samples=4, tokenizer=data_loader.dataset.tokenizer)
-
+            # viz.visualize_one_sample(batch, num_samples=4, tokenizer=data_loader.dataset.tokenizer)
             self._optimize_batch(batch)
 
-    def _optimize_batch(self, batch):
-        input_data_sample, labels = flatten_batch_and_sequence_dims(batch, self.device)
-        outputs = self.model(input_data_sample)
-        loss = torch.nn.functional.cross_entropy(outputs, labels)
+    def _optimize_batch(self, batch: DataSample):
+        outputs = self.model(batch)
+        loss = torch.nn.functional.cross_entropy(outputs, batch.labels)
 
         loss.backward()
         self.optimizer.step()
@@ -49,13 +46,13 @@ class Trainer:
 
     def _validate_batch(self, batch, correct, total):
         batch = DataSample(**batch)
-        input_tokens, labels = flatten_batch_and_sequence_dims(batch, self.device)
+        batch = flatten_batch_and_sequence_dims(batch, self.device)
 
-        outputs = self.model(input_tokens)
-        _, predicted = torch.max(outputs.logits, 1)
+        outputs = self.model(batch)
+        _, predicted = torch.max(outputs, 1)
 
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+        total += batch.labels.size(0)
+        correct += (predicted == batch.labels).sum().item()
         return correct, total
 
 
