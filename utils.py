@@ -14,23 +14,8 @@ from matplotlib import pyplot as plt
 class DataSample:
     images: torch.Tensor
     motor_context: torch.Tensor
-    text_context_ids: torch.Tensor
+    next_token_logits: torch.Tensor
     labels: torch.Tensor
-
-
-def embeddings_to_tokens(embeddings):
-    # Round the embeddings to the nearest integer to produce tokens
-    # (This is a placeholder and should be replaced with your actual method)
-    embedding_tokens = torch.round(embeddings)
-    return embedding_tokens
-
-
-def concatenate_tokens(input_tokens, embedding_tokens):
-    # Concatenate the input tokens and the embedding tokens
-    # (This is a placeholder and should be replaced with your actual method)
-    # input_tokens [3x1,128], embedding_tokens [3,64]
-    concatenated_tokens = torch.cat((input_tokens, embedding_tokens.unsqueeze(1)), dim=2)
-    return concatenated_tokens
 
 
 def flatten_batch_and_sequence_dims(batch: DataSample, device):
@@ -38,14 +23,14 @@ def flatten_batch_and_sequence_dims(batch: DataSample, device):
     # [batch, time, ...]  -> [batch * time, ...]
 
     images = batch.images.flatten(start_dim=0, end_dim=1)
-    text_input = batch.text_context_ids.flatten(start_dim=0, end_dim=1)
+    text_input = batch.next_token_logits.flatten(start_dim=0, end_dim=1)
     motor_context = batch.motor_context.flatten(start_dim=0, end_dim=1)
     labels = batch.labels.flatten(start_dim=0, end_dim=1)
 
     return DataSample(
         images=images.to(device),
         motor_context=motor_context.to(device),
-        text_context_ids=text_input.to(device),
+        next_token_logits=text_input.to(device),
         labels=labels.to(device),
     )
 

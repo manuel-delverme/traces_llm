@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import constants
 from utils import DataSample
@@ -179,15 +180,19 @@ def clean_token(token):
 
 
 class TextTraceDataset(Dataset):
-    def __init__(self, omniglot_dataset, text_dataset, tokenizer):
+    def __init__(self, omniglot_dataset, text_dataset):
         super().__init__()
         self.omniglot_dataset = omniglot_dataset
         self.text_dataset = text_dataset
-        self.tokenizer = tokenizer
+
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.language_model = AutoModelForCausalLM.from_pretrained("gpt2")
 
     def __len__(self):
         return min(len(self.omniglot_dataset), len(self.text_dataset))
 
+    @torch.no_grad()
     def __getitem__(self, idx):
         sentence_to_encode = self.text_dataset[idx]
         encoded_text = self.tokenizer.encode_plus(
@@ -231,10 +236,27 @@ class TextTraceDataset(Dataset):
             text_contexts.append(left_padded_char_context)
 
         token_context_ids = torch.tensor(np.array(text_contexts), dtype=torch.long)
+
+        next_token_logits = self.language_model(token_context_ids).logits[:, -1, :]
+
         batch = DataSample(
             images=torch.stack(images, dim=0),
             motor_context=torch.stack(motor_contexts, dim=0),
-            text_context_ids=token_context_ids,
+            next_token_logits=next_token_logits,
             labels=torch.tensor(text_so_far, dtype=torch.long),
         )
         return dataclasses.asdict(batch)
+
+
+class MemoryCachedTextTraceDataset(TextTraceDataset):
+    def __init__(self, omniglot_dataset, text_dataset):
+        super().__init__(omniglot_dataset, text_dataset)
+        self.cache = {}
+
+    def __getitem__(self, idx):
+        if idx in self.cache:
+            return self.cache[idx]
+        else:
+            sample = super().__getitem__(idx)
+            self.cache[idx] = sample
+            return sample

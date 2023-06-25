@@ -1,9 +1,10 @@
 import torch
+import tqdm
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from transformers import AutoModelForCausalLM, AutoTokenizer, AdamW
+from transformers import AdamW
 
-from dataset import OmniglotDataset, TextTraceDataset, MultimodalTransform
+import dataset
 from models import MultimodalLLM
 from utils import flatten_batch_and_sequence_dims, DataSample
 
@@ -55,11 +56,11 @@ class Trainer:
         return correct, total
 
 
-def fine_tune(trainer, train_set, test_set, epochs=5):
+def fine_tune(trainer, train_set, test_set, epochs=1_000):
     train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
     test_loader = DataLoader(test_set, batch_size=32, shuffle=False)
 
-    for epoch in range(epochs):
+    for epoch in tqdm.trange(epochs):
         trainer.train_epoch(train_loader)
         trainer.validate(epoch, epochs, test_loader)
 
@@ -67,11 +68,7 @@ def fine_tune(trainer, train_set, test_set, epochs=5):
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    tokenizer.pad_token = tokenizer.eos_token
-
-    language_model = AutoModelForCausalLM.from_pretrained("gpt2")
-    model = MultimodalLLM(language_model).to(device)
+    model = MultimodalLLM().to(device)
 
     optimizer = AdamW(model.parameters(), lr=1e-5)
     trainer = Trainer(device, model, optimizer)
@@ -79,7 +76,7 @@ def main():
     img_dir = '/home/delverme/Downloads/images_background_small1'
     stroke_dir = '/home/delverme/Downloads/strokes_background_small1/strokes_background_small1'
 
-    multimodal_transforms = MultimodalTransform(
+    multimodal_transforms = dataset.MultimodalTransform(
         transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((28, 28)),
@@ -90,14 +87,14 @@ def main():
         ])
     )
 
-    omniglot_train_set = OmniglotDataset(img_dir, stroke_dir, transforms=multimodal_transforms)
-    omniglot_test_set = OmniglotDataset(img_dir, stroke_dir, transforms=multimodal_transforms)
+    omniglot_train_set = dataset.OmniglotDataset(img_dir, stroke_dir, transforms=multimodal_transforms)
+    omniglot_test_set = dataset.OmniglotDataset(img_dir, stroke_dir, transforms=multimodal_transforms)
 
     text_train_set = ["This is the first sentence", "Here is another sentence", "This is yet another sentence"]
     text_test_set = ["This is the first sentence", "Here is another sentence", "This is yet another sentence"]
 
-    train_set = TextTraceDataset(omniglot_train_set, text_train_set, tokenizer)
-    test_set = TextTraceDataset(omniglot_test_set, text_test_set, tokenizer)
+    train_set = dataset.MemoryCachedTextTraceDataset(omniglot_train_set, text_train_set)
+    test_set = dataset.MemoryCachedTextTraceDataset(omniglot_test_set, text_test_set)
 
     fine_tune(trainer, train_set, test_set)
 

@@ -28,10 +28,8 @@ class TraceEmbeddingModel(nn.Module):
 
 
 class MultimodalLLM(nn.Module):
-    def __init__(self, language_model: GPT2LMHeadModel):
+    def __init__(self):
         super().__init__()
-        self.language_model = language_model
-
         self.image_encoder = nn.Sequential(
             nn.Conv2d(1, 32, 3, padding=1),
             nn.ReLU(),
@@ -82,15 +80,13 @@ class MultimodalLLM(nn.Module):
 
         motor_features = motor_features.unflatten(dim=0, sizes=(batch_size, seq_len, -1))
 
-        llm_out: CausalLMOutputWithCrossAttentions = self.language_model(batch.text_context_ids)
-
-        assert llm_out.logits.shape == (batch_size, TOKEN_CONTEXT_LEN, GPT2_VOCAB_SIZE)
-
-        text_features = llm_out.logits[:, -1, :]  # TODO: check this
+        # llm_out: CausalLMOutputWithCrossAttentions = self.language_model(batch.text_context_ids)
+        # assert llm_out.logits.shape == (batch_size, TOKEN_CONTEXT_LEN, GPT2_VOCAB_SIZE)
+        # text_features = llm_out.logits[:, -1, :]  # TODO: check this
 
         # Logits is a tensor of shape (batch_size, sequence_length, vocab_size)
         # Vocabulary size is ~50k for GPT2, ours is VOCAB_SIZE, so we need to project it down to VOCAB_SIZE
-        text_features = self.downscale_vocab(text_features)
+        text_features = self.downscale_vocab(batch.next_token_logits)
 
         # TODO:
         # text has no seq len, it's one token per token
