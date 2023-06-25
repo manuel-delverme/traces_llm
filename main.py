@@ -3,7 +3,6 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from transformers import AutoModelForCausalLM, AutoTokenizer, AdamW
 
-import viz
 from dataset import OmniglotDataset, TextTraceDataset, MultimodalTransform
 from models import MultimodalLLM
 from utils import flatten_batch_and_sequence_dims, DataSample
@@ -97,10 +96,8 @@ def main():
     text_train_set = ["This is the first sentence", "Here is another sentence", "This is yet another sentence"]
     text_test_set = ["This is the first sentence", "Here is another sentence", "This is yet another sentence"]
 
-    train_set = TextTraceDataset(omniglot_train_set, text_train_set, tokenizer,
-                                 token_to_text={v: k for k, v in tokenizer.get_vocab().items()})
-    test_set = TextTraceDataset(omniglot_test_set, text_test_set, tokenizer,
-                                token_to_text={v: k for k, v in tokenizer.get_vocab().items()})
+    train_set = TextTraceDataset(omniglot_train_set, text_train_set, tokenizer)
+    test_set = TextTraceDataset(omniglot_test_set, text_test_set, tokenizer)
 
     fine_tune(trainer, train_set, test_set)
 

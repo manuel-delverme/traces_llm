@@ -65,9 +65,6 @@ class OmniglotDataset(Dataset):
         # token_idx, rep_idx = divmod(idx, self.traces_per_char)
         rep_idx = 1
 
-        # text = self.token_to_text[text_token_idx].lower()
-        # TODO: why is the space encoded as a 218
-
         token_images = []
         token_traces = []
 
@@ -182,12 +179,11 @@ def clean_token(token):
 
 
 class TextTraceDataset(Dataset):
-    def __init__(self, omniglot_dataset, text_dataset, tokenizer, token_to_text):
+    def __init__(self, omniglot_dataset, text_dataset, tokenizer):
         super().__init__()
         self.omniglot_dataset = omniglot_dataset
         self.text_dataset = text_dataset
         self.tokenizer = tokenizer
-        self.token_to_text = token_to_text
 
     def __len__(self):
         return min(len(self.omniglot_dataset), len(self.text_dataset))
@@ -213,11 +209,6 @@ class TextTraceDataset(Dataset):
 
         for token_idx, token in zip(token_ids, tokens):
             token_images, token_motor_traces = self.omniglot_dataset[token]
-
-            # token_images, token_motor_traces = self.transforms(
-            #     images=token_images,
-            #     motor_traces=token_motor_traces
-            # )
 
             char_context = np.array(text_so_far)
             assert constants.TEXT_PADDING_ID not in char_context
