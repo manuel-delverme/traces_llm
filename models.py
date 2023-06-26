@@ -1,12 +1,8 @@
-# File: models.py
-
 import torch
 from torch import nn
 from torch.nn import functional as F
-from transformers import GPT2LMHeadModel
-from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
-from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, POINTS_IN_MOTOR_SEQUENCE, TOKEN_CONTEXT_LEN
+from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, POINTS_IN_MOTOR_SEQUENCE, MAX_CHARS_PER_TOKEN
 from utils import DataSample
 
 
@@ -54,8 +50,9 @@ class MultimodalLLM(nn.Module):
             nn.Linear(GPT2_VOCAB_SIZE, VOCAB_SIZE),
         )
 
+        features_size = (128 + 128) * MAX_CHARS_PER_TOKEN + VOCAB_SIZE
         self.prediction_head = nn.Sequential(
-            nn.Linear(5220, 1024),
+            nn.Linear(features_size, 1024),
             nn.ReLU(),
             nn.Linear(1024, VOCAB_SIZE),
         )
@@ -86,7 +83,7 @@ class MultimodalLLM(nn.Module):
 
         # Logits is a tensor of shape (batch_size, sequence_length, vocab_size)
         # Vocabulary size is ~50k for GPT2, ours is VOCAB_SIZE, so we need to project it down to VOCAB_SIZE
-        text_features = self.downscale_vocab(batch.next_token_logits)
+        text_features = self.downscale_vocab(batch.next_token_logits.to(torch.float32))
 
         # TODO:
         # text has no seq len, it's one token per token

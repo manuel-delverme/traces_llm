@@ -1,5 +1,6 @@
 import dataclasses
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,7 +19,16 @@ def resample_stroke(stroke, num_samples=100):
 
 
 def normalize_trace(trace, min_x, max_x, min_y, max_y):
-    return np.stack([(trace[:, 0] - min_x) / (max_x - min_x), (trace[:, 1] - min_y) / (max_y - min_y)], axis=1)
+    x_norm = max_x - min_x
+    if x_norm == 0:
+        x_norm = 1
+    y_norm = max_y - min_y
+    if y_norm == 0:
+        y_norm = 1
+    return np.stack([
+        (trace[:, 0] - min_x) / x_norm,
+        (trace[:, 1] - min_y) / y_norm,
+    ], axis=1)
 
 
 class MultimodalTransform:
@@ -120,8 +130,8 @@ class OmniglotDataset(Dataset):
 
     def _resample_traces(self, motor_traces):
         return [
-            resample_stroke(stroke, num_samples=constants.POINTS_IN_MOTOR_SEQUENCE // len(motor_traces)) for stroke in
-            motor_traces
+            resample_stroke(
+                stroke, num_samples=constants.POINTS_IN_MOTOR_SEQUENCE // len(motor_traces)) for stroke in motor_traces
         ]
 
     def _process_image_and_traces(self, image, resampled_motor_traces):
@@ -216,7 +226,6 @@ class TextTraceDataset(Dataset):
             token_images, token_motor_traces = self.omniglot_dataset[token]
 
             char_context = np.array(text_so_far)
-            assert constants.TEXT_PADDING_ID not in char_context
 
             left_padded_char_context = np.pad(
                 char_context, (constants.TOKEN_CONTEXT_LEN - len(char_context), 0), 'constant',
@@ -231,6 +240,13 @@ class TextTraceDataset(Dataset):
             # TODO: the mod is temporary
             text_so_far.append(token_idx % constants.VOCAB_SIZE)
 
+            # assert token_idx <= constants.VOCAB_SIZE
+            # text_so_far.append(token_idx.item())
+
+            if constants.TEXT_PADDING_ID in text_so_far:
+                print("Found padding token in text so far, returning another sample")
+                return self[idx + 1]
+
             images.append(left_padded_images)
             motor_contexts.append(left_padded_motor_traces)
             text_contexts.append(left_padded_char_context)
@@ -238,6 +254,9 @@ class TextTraceDataset(Dataset):
         token_context_ids = torch.tensor(np.array(text_contexts), dtype=torch.long)
 
         next_token_logits = self.language_model(token_context_ids).logits[:, -1, :]
+
+        # Downcast to float16 to save memory
+        next_token_logits = next_token_logits.to(dtype=torch.float16)
 
         batch = DataSample(
             images=torch.stack(images, dim=0),
@@ -252,11 +271,30 @@ class MemoryCachedTextTraceDataset(TextTraceDataset):
     def __init__(self, omniglot_dataset, text_dataset):
         super().__init__(omniglot_dataset, text_dataset)
         self.cache = {}
+        self.hits = 0
+        self.misses = 0
 
     def __getitem__(self, idx):
+        if self.hits + self.misses > 0:
+            print("Hits:", self.hits, "Misses:", self.misses, "Hit Rate:", self.hits / (self.hits + self.misses))
         if idx in self.cache:
+            self.hits += 1
             return self.cache[idx]
         else:
+            self.misses += 1
             sample = super().__getitem__(idx)
             self.cache[idx] = sample
+            print("Cache size in MB:", calc_size(self.cache) / 1024 / 1024)
             return sample
+
+
+def calc_size(obj):
+    size = 0
+    for k, v in obj.items():
+        if isinstance(v, DataSample):
+            size += calc_size(dataclasses.asdict(v))
+        elif isinstance(v, dict):
+            size += calc_size(v)
+        else:
+            size += v.element_size() * v.nelement()
+    return size
