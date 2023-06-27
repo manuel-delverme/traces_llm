@@ -1,19 +1,15 @@
 import os.path
 import sys
 
-from pytorch_lightning.loggers import WandbLogger
-from argparse import Namespace
-from typing import Union, Dict, Any, Optional
-
-import lightning_fabric.loggers
-import pytorch_lightning as pl
 import experiment_buddy
+import pytorch_lightning as pl
 import requests
 import torch
 from pytorch_lightning import Trainer
+from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
-from transformers import GPT2Model, GPT2Tokenizer, AdamW, LineByLineTextDataset, DataCollatorForLanguageModeling
+from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLanguageModeling
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 import constants
