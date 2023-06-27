@@ -1,0 +1,5 @@
+experiment_buddy
+lightning
+requests
+torch
+transformers
