@@ -154,7 +154,13 @@ if __name__ == '__main__':
 
     extra_modules = None
     if hostname == "mila":
-        esh += "#SBATCH --partition=long\n"
+        esh += "#SBATCH --partition=main\n"
+        extra_modules = [
+            "python/3.7",
+            "cuda/11.1",
+            "cudnn/8.0",
+            "pytorch/1.8.1"
+        ]
     elif "cc" in hostname:
         esh += "#SBATCH --partition=cpubase_bycore_b4\n"
         esh += "#SBATCH --account=rrg-dprecup\n"
@@ -162,6 +168,9 @@ if __name__ == '__main__':
         extra_modules = [
             "python/3.7",
             # "pytorch/1.7", # CC doesn't have pytorch, should be a package
+            "cuda/11.1/",
+            "cudnn/8.0/",
+            "pytorch/1.8.1"
         ]
     else:
         esh = ""
