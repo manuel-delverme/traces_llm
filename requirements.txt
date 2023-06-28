@@ -1,5 +1,6 @@
 experiment_buddy
 pytorch_lightning
+omegaconf
 requests
 torch
 transformers
