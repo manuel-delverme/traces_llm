@@ -50,12 +50,18 @@ class GPT2FineTuning(pl.LightningModule):
         logits = self(input_ids, attention_mask)
         a, b = logits.view(-1, logits.size(-1)), labels.view(-1)
         loss = self.loss_fn(a, b)
-        self.log('val_loss', loss, prog_bar=True)
 
-        # Calculate accuracy
         _, predicted = torch.max(logits, dim=-1)
-        accuracy = torch.sum(predicted == labels) / (labels.shape[0] * labels.shape[1])
+        invalid = labels < 0
+        valid_predicted = predicted[~invalid]
+        valid_labels = labels[~invalid]
+        correct = valid_predicted == valid_labels
+
+        accuracy = sum(correct) / correct.numel()
+
+        self.log('val_loss', loss, on_epoch=True, prog_bar=True)
         self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True)
+        # , "val_loss", loss
 
     def configure_optimizers(self):
         # return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
@@ -85,27 +91,33 @@ def cache_dataset():
 
 def main(logger: experiment_buddy.WandbWrapper):
     cache_dataset()
-    # Initialize your LightningModule
-    model = GPT2FineTuning(learning_rate=2e-5)
 
-    # Initialize a trainer
-    trainer = Trainer(
-        # gpus=1,  # Use one GPU
-        max_epochs=5,  # Train for 5 epochs
-        logger=WandbLogger(experiment=logger.run)
-    )
+    model = GPT2FineTuning(learning_rate=2e-5)
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    dataset = LineByLineTextDataset(tokenizer=tokenizer, file_path=DATASET_PATH, block_size=128)
+    dataset = LineByLineTextDataset(
+        tokenizer=tokenizer,
+        file_path=DATASET_PATH,
+        block_size=128
+    )
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=8,
+        num_workers=0,
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
+
+    trainer = Trainer(
+        max_epochs=-1,
+        logger=WandbLogger(experiment=logger.run),
+        enable_progress_bar=True,
+        # log_every_n_steps=1  # len(train_dataloader) - 1
+    )
+
     trainer.fit(
         model,
         train_dataloaders=train_dataloader,
@@ -113,48 +125,41 @@ def main(logger: experiment_buddy.WandbWrapper):
     )
 
 
-if __name__ == '__main__':
-    # experiment_buddy.register_defaults(vars(constants))
-    # host = ""
-    # logger = experiment_buddy.deploy()
-    # main(logger)
-
+def buddy_setup():
     experiment_buddy.register_defaults(vars(constants))
     import wandb
-
     wandb_kwargs = dict(
         monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
-
     # esh = ""
     # hostname = ""
     # sweep_config = ""
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
-    hostname = "mila"
-
+    # hostname = "mila"
+    hostname = ""
     proc_num = 1
     # proc_num = 8
-
     # sweep_config = "sweep.yaml"
     # proc_num = -1
-
     sweep_config = ""
     # hostname = "aws://t4g.micro"
-
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
         hostname = ""
         sweep_config = ""
-
     esh = """
     #SBATCH --cpus-per-task=4
     #SBATCH --mem=8G
     #SBATCH --time=2:00:00
     #SBATCH --gres=gpu:1
         """.strip() + "\n"
-
     extra_modules = None
     if hostname == "mila":
-        esh += "#SBATCH --partition=long\n"
+        esh += "#SBATCH --partition=main\n"
+        extra_modules = [
+            "python/3.7",
+            "cuda/11.1",
+            "pytorch/1.8.1"
+        ]
     elif "cc" in hostname:
         esh += "#SBATCH --partition=cpubase_bycore_b4\n"
         esh += "#SBATCH --account=rrg-dprecup\n"
@@ -162,13 +167,19 @@ if __name__ == '__main__':
         extra_modules = [
             "python/3.7",
             # "pytorch/1.7", # CC doesn't have pytorch, should be a package
+            "cuda/11.1",
+            "pytorch/1.8.1"
         ]
     else:
         esh = ""
-
     # wandb_run_name = f"{hyper.env_name}-{hyper.sync_with_library}"
     tb = experiment_buddy.deploy(
         hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config, proc_num=proc_num,
-        extra_modules=extra_modules,
+        extra_modules=extra_modules, conda_env="traces_llm"
     )
+    return tb
+
+
+if __name__ == '__main__':
+    tb = buddy_setup()
     main(tb)
