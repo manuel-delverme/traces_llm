@@ -154,7 +154,12 @@ if __name__ == '__main__':
 
     extra_modules = None
     if hostname == "mila":
-        esh += "#SBATCH --partition=long\n"
+        esh += "#SBATCH --partition=main\n"
+        extra_modules = [
+            "python/3.7",
+            "cuda/11.1",
+            "pytorch/1.8.1"
+        ]
     elif "cc" in hostname:
         esh += "#SBATCH --partition=cpubase_bycore_b4\n"
         esh += "#SBATCH --account=rrg-dprecup\n"
@@ -162,6 +167,8 @@ if __name__ == '__main__':
         extra_modules = [
             "python/3.7",
             # "pytorch/1.7", # CC doesn't have pytorch, should be a package
+            "cuda/11.1",
+            "pytorch/1.8.1"
         ]
     else:
         esh = ""
@@ -169,6 +176,6 @@ if __name__ == '__main__':
     # wandb_run_name = f"{hyper.env_name}-{hyper.sync_with_library}"
     tb = experiment_buddy.deploy(
         hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config, proc_num=proc_num,
-        extra_modules=extra_modules,
+        extra_modules=extra_modules, conda_env="traces_llm"
     )
     main(tb)
