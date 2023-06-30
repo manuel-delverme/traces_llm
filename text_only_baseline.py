@@ -27,6 +27,13 @@ def preprocess_labels(labels):
     return labels
 
 
+class OverfitCallback(pl.callbacks.Callback):
+    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        logs = trainer.callback_metrics
+        should_stop = logs['val_accuracy'] > 0.99
+        trainer.should_stop = trainer.should_stop or bool(should_stop)
+
+
 class GPT2FineTuning(pl.LightningModule):
     def __init__(self, learning_rate: float):
         super().__init__()
@@ -74,8 +81,6 @@ class GPT2FineTuning(pl.LightningModule):
 
         self.log('val_loss', loss, on_epoch=True, prog_bar=True)
         self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True)
-        if accuracy > 0.99:
-            raise StopIteration
         # , "val_loss", loss
 
     def configure_optimizers(self):
@@ -84,7 +89,8 @@ class GPT2FineTuning(pl.LightningModule):
 
     def configure_callbacks(self):
         return [
-            EarlyStopping(monitor="val_accuracy", mode="max", patience=10),
+            # EarlyStopping(monitor="val_accuracy", mode="max", patience=10),
+            OverfitCallback()
             # ModelCheckpoint(monitor="val_loss"),
         ]
 
@@ -139,7 +145,7 @@ def main(logger: experiment_buddy.WandbWrapper):
         max_epochs=-1,
         logger=WandbLogger(experiment=logger.run),
         enable_progress_bar=True,
-        # log_every_n_steps=1  # len(train_dataloader) - 1
+        log_every_n_steps=1  # len(train_dataloader) - 1
     )
 
     trainer.fit(
