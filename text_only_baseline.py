@@ -114,8 +114,10 @@ def cache_dataset():
 def main(logger: experiment_buddy.WandbWrapper):
     cache_dataset()
 
-    if constants.DATASET_SIZE == 1:
+    if constants.DATASET_SIZE <= 100:
         lr = 1e-1
+    elif constants.DATASET_SIZE <= 1000:
+        lr = 5e-2
     else:
         lr = 2e-5
 
@@ -159,7 +161,7 @@ def buddy_setup():
     experiment_buddy.register_defaults(vars(constants))
     import wandb
     wandb_kwargs = dict(
-        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
+        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True, mode="offline")
     # esh = ""
     # hostname = ""
     # sweep_config = ""
