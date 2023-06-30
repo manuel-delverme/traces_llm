@@ -1,6 +1,8 @@
 import os.path
 import sys
 
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+
 import experiment_buddy
 import pytorch_lightning as pl
 import requests
@@ -18,6 +20,13 @@ from constants import VOCAB_SIZE
 DATASET_PATH = 'tiny_shakespeare.txt'
 
 
+def preprocess_labels(labels):
+    labels = labels.clone()
+    valid = labels != -100
+    labels[valid] = labels[valid] % VOCAB_SIZE
+    return labels
+
+
 class GPT2FineTuning(pl.LightningModule):
     def __init__(self, learning_rate: float):
         super().__init__()
@@ -28,7 +37,6 @@ class GPT2FineTuning(pl.LightningModule):
         self.gpt2.requires_grad_(False)
 
         # Add a linear layer for fine-tuning
-        # self.gpt2.config.vocab_size
         self.linear = torch.nn.Linear(self.gpt2.config.hidden_size, VOCAB_SIZE, bias=False)
 
     def forward(self, input_ids, attention_mask):
@@ -40,15 +48,20 @@ class GPT2FineTuning(pl.LightningModule):
         input_ids, attention_mask, labels = batch.data["input_ids"], batch.data["attention_mask"], batch.data["labels"]
 
         logits = self(input_ids, attention_mask)
+
+        labels = preprocess_labels(labels)
+
         loss = self.loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
         self.log('train_loss', loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         input_ids, attention_mask, labels = batch.data["input_ids"], batch.data["attention_mask"], batch.data["labels"]
+        labels = preprocess_labels(labels)
 
         logits = self(input_ids, attention_mask)
-        a, b = logits.view(-1, logits.size(-1)), labels.view(-1)
+        a = logits.view(-1, logits.size(-1))
+        b = labels.view(-1)
         loss = self.loss_fn(a, b)
 
         _, predicted = torch.max(logits, dim=-1)
@@ -61,16 +74,22 @@ class GPT2FineTuning(pl.LightningModule):
 
         self.log('val_loss', loss, on_epoch=True, prog_bar=True)
         self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True)
+        if accuracy > 0.99:
+            raise StopIteration
         # , "val_loss", loss
 
     def configure_optimizers(self):
         # return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
+    def configure_callbacks(self):
+        return [
+            EarlyStopping(monitor="val_accuracy", mode="max", patience=10),
+            # ModelCheckpoint(monitor="val_loss"),
+        ]
+
     @staticmethod
     def loss_fn(logits, labels):
-        valid = labels != -100
-        labels[valid] = labels[valid] % VOCAB_SIZE
         return torch.nn.functional.cross_entropy(logits, labels, ignore_index=-100)
 
 
@@ -82,9 +101,6 @@ def cache_dataset():
     data_url = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
     dataset = requests.get(data_url).text
 
-    dataset = dataset[:int(constants.DOWN_SAMPLE_DATASET_RATIO * len(dataset))]
-    print("Dataset size:", len(dataset))
-
     with open(DATASET_PATH, 'w') as f:
         f.write(dataset)
 
@@ -92,7 +108,12 @@ def cache_dataset():
 def main(logger: experiment_buddy.WandbWrapper):
     cache_dataset()
 
-    model = GPT2FineTuning(learning_rate=2e-5)
+    if constants.DATASET_SIZE == 1:
+        lr = 1e-1
+    else:
+        lr = 2e-5
+
+    model = GPT2FineTuning(learning_rate=lr)
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     if tokenizer.pad_token is None:
@@ -103,6 +124,9 @@ def main(logger: experiment_buddy.WandbWrapper):
         file_path=DATASET_PATH,
         block_size=128
     )
+    # dataset.examples = dataset.examples[:int(constants.DOWN_SAMPLE_DATASET_RATIO * len(dataset))]
+    dataset.examples = dataset.examples[:constants.DATASET_SIZE]
+    print("Dataset size:", len(dataset))
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
