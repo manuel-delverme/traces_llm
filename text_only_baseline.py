@@ -2,9 +2,6 @@ import inspect
 import os.path
 import sys
 
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-
-import experiment_buddy
 import pytorch_lightning as pl
 import requests
 import torch
@@ -16,6 +13,7 @@ from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLa
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 import constants
+import experiment_buddy
 from constants import VOCAB_SIZE
 
 DATASET_PATH = 'tiny_shakespeare.txt'
@@ -134,6 +132,7 @@ def main(logger: experiment_buddy.WandbWrapper):
         block_size=128
     )
     # dataset.examples = dataset.examples[:int(constants.DOWN_SAMPLE_DATASET_RATIO * len(dataset))]
+    assert len(dataset) > constants.DATASET_SIZE
     dataset.examples = dataset.examples[:constants.DATASET_SIZE]
     print("Dataset size:", len(dataset))
 
@@ -162,8 +161,7 @@ def buddy_setup():
     experiment_buddy.register_defaults(vars(constants))
     import wandb
     wandb_kwargs = dict(
-        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True,
-        mode="offline")
+        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
     # esh = ""
     # hostname = ""
     # sweep_config = ""
@@ -171,11 +169,10 @@ def buddy_setup():
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    proc_num = 1
+    # proc_num = 1
     # proc_num = 8
-    # sweep_config = "sweep.yaml"
-    # proc_num = -1
-    sweep_config = ""
+    sweep_config = "sweep.yaml"
+    proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
         hostname = ""
@@ -223,5 +220,5 @@ def buddy_setup():
 
 
 if __name__ == '__main__':
-    tb = buddy_setup()
-    main(tb)
+    tb_ = buddy_setup()
+    main(tb_)

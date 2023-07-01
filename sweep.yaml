@@ -1,0 +1,24 @@
+program: text_only_baseline.py
+command:
+  - ${env}
+  - ${interpreter}
+  - -O
+  - ${program}
+  - ${args}
+metric:
+  name: val_accuracy
+  goal: maximize
+method: grid
+parameters:
+  ^DATASET_SIZE:
+    values:
+      - 1000
+      - 10000
+      - 32777
+  ^VOCAB_SIZE:
+    values:
+      - 1
+      - 10
+      - 100
+      - 1000
+      - 10000
