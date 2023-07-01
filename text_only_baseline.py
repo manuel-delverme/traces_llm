@@ -168,7 +168,7 @@ def buddy_setup():
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
-    hostname = ""
+    hostname = "mila"
     proc_num = 1
     # proc_num = 8
     # sweep_config = "sweep.yaml"
