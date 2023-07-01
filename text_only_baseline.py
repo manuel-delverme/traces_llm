@@ -161,14 +161,15 @@ def buddy_setup():
     experiment_buddy.register_defaults(vars(constants))
     import wandb
     wandb_kwargs = dict(
-        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True, mode="offline")
+        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True,
+        mode="offline")
     # esh = ""
     # hostname = ""
     # sweep_config = ""
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
-    hostname = ""
+    hostname = "mila"
     proc_num = 1
     # proc_num = 8
     # sweep_config = "sweep.yaml"
@@ -188,7 +189,7 @@ def buddy_setup():
     if hostname == "mila":
         esh += "#SBATCH --partition=main\n"
         extra_modules = [
-            "python/3.7",
+            "anaconda/3",
             "cuda/11.1",
             "pytorch/1.8.1"
         ]
@@ -197,7 +198,7 @@ def buddy_setup():
         esh += "#SBATCH --account=rrg-dprecup\n"
         # esh += "#SBATCH --account=rrg-bengioy-ad\n"
         extra_modules = [
-            "python/3.7",
+            "anaconda/3",
             # "pytorch/1.7", # CC doesn't have pytorch, should be a package
             "cuda/11.1",
             "pytorch/1.8.1"
