@@ -1,14 +1,13 @@
+import datetime
 import inspect
 import os.path
 import sys
 
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-
-import experiment_buddy
 import pytorch_lightning as pl
 import requests
 import torch
 from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
@@ -16,6 +15,8 @@ from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLa
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 import constants
+import experiment_buddy
+import hyper
 from constants import VOCAB_SIZE
 
 DATASET_PATH = 'tiny_shakespeare.txt'
@@ -44,12 +45,25 @@ class GPT2FineTuning(pl.LightningModule):
         self.gpt2 = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True)
         self.gpt2.requires_grad_(False)
 
-        # Add a linear layer for fine-tuning
-        self.linear = torch.nn.Linear(self.gpt2.config.hidden_size, VOCAB_SIZE, bias=False)
+        # self.head = torch.nn.Linear(self.gpt2.config.hidden_size, VOCAB_SIZE, bias=False)
+
+        hidden_size = hyper.hidden_size
+
+        self.head = torch.nn.Sequential(
+            torch.nn.Linear(self.gpt2.config.hidden_size, hidden_size),
+
+            torch.nn.ReLU(),
+            *[torch.nn.Sequential(
+                torch.nn.Linear(hidden_size, hidden_size),
+                torch.nn.ReLU(),
+            ) for _ in range(hyper.num_layers)],
+
+            torch.nn.Linear(hidden_size, VOCAB_SIZE, bias=False),
+        )
 
     def forward(self, input_ids, attention_mask):
         outputs: CausalLMOutputWithCrossAttentions = self.gpt2(input_ids=input_ids, attention_mask=attention_mask)
-        logits = self.linear(outputs.hidden_states[-1])
+        logits = self.head(outputs.hidden_states[-1])
         return logits
 
     def training_step(self, batch, batch_idx):
@@ -90,7 +104,7 @@ class GPT2FineTuning(pl.LightningModule):
 
     def configure_callbacks(self):
         return [
-            # EarlyStopping(monitor="val_accuracy", mode="max", patience=10),
+            EarlyStopping(monitor="val_accuracy", mode="max", patience=100),
             OverfitCallback()
             # ModelCheckpoint(monitor="val_loss"),
         ]
@@ -115,14 +129,7 @@ def cache_dataset():
 def main(logger: experiment_buddy.WandbWrapper):
     cache_dataset()
 
-    if constants.DATASET_SIZE <= 100:
-        lr = 1e-1
-    elif constants.DATASET_SIZE <= 1000:
-        lr = 5e-2
-    else:
-        lr = 2e-5
-
-    model = GPT2FineTuning(learning_rate=lr)
+    model = GPT2FineTuning(learning_rate=hyper.lr)
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     if tokenizer.pad_token is None:
@@ -134,6 +141,7 @@ def main(logger: experiment_buddy.WandbWrapper):
         block_size=128
     )
     # dataset.examples = dataset.examples[:int(constants.DOWN_SAMPLE_DATASET_RATIO * len(dataset))]
+    assert len(dataset) > constants.DATASET_SIZE
     dataset.examples = dataset.examples[:constants.DATASET_SIZE]
     print("Dataset size:", len(dataset))
 
@@ -145,7 +153,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     )
 
     trainer = Trainer(
-        max_epochs=-1,
+        max_time=datetime.timedelta(hours=1),
         logger=WandbLogger(experiment=logger.run),
         enable_progress_bar=True,
         log_every_n_steps=1  # len(train_dataloader) - 1
@@ -159,11 +167,10 @@ def main(logger: experiment_buddy.WandbWrapper):
 
 
 def buddy_setup():
-    experiment_buddy.register_defaults(vars(constants))
+    experiment_buddy.register_defaults(vars(hyper))
     import wandb
     wandb_kwargs = dict(
-        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True,
-        mode="offline")
+        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
     # esh = ""
     # hostname = ""
     # sweep_config = ""
@@ -171,24 +178,24 @@ def buddy_setup():
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    proc_num = 1
+    # proc_num = 1
     # proc_num = 8
-    # sweep_config = "sweep.yaml"
-    # proc_num = -1
-    sweep_config = ""
+    sweep_config = "sweep.yaml"
+    proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
         hostname = ""
         sweep_config = ""
-    esh = """
+    esh = "\n".join(l.strip() for l in """
     #SBATCH --cpus-per-task=4
     #SBATCH --mem=8G
-    #SBATCH --time=2:00:00
+    #SBATCH --time=1:00:00
     #SBATCH --gres=gpu:1
-        """.strip() + "\n"
+        """.strip().split("\n")
+                    ) + "\n"
     extra_modules = None
     if hostname == "mila":
-        esh += "#SBATCH --partition=main\n"
+        esh += "#SBATCH --partition=long\n"
         extra_modules = [
             "anaconda/3",
             "cuda/11.1",
@@ -223,5 +230,5 @@ def buddy_setup():
 
 
 if __name__ == '__main__':
-    tb = buddy_setup()
-    main(tb)
+    tb_ = buddy_setup()
+    main(tb_)
