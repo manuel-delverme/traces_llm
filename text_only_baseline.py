@@ -168,7 +168,7 @@ def buddy_setup():
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
-    hostname = ""
+    hostname = "mila"
     proc_num = 1
     # proc_num = 8
     # sweep_config = "sweep.yaml"
@@ -197,7 +197,7 @@ def buddy_setup():
         esh += "#SBATCH --account=rrg-dprecup\n"
         # esh += "#SBATCH --account=rrg-bengioy-ad\n"
         extra_modules = [
-            "python/3.7",
+            "anaconda/3",
             # "pytorch/1.7", # CC doesn't have pytorch, should be a package
             "cuda/11.1",
             "pytorch/1.8.1"
