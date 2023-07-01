@@ -155,8 +155,8 @@ def main(logger: experiment_buddy.WandbWrapper):
     trainer = Trainer(
         max_time=datetime.timedelta(hours=1),
         logger=WandbLogger(experiment=logger.run),
-        enable_progress_bar=True,
-        log_every_n_steps=1  # len(train_dataloader) - 1
+        enable_progress_bar=False,
+        log_every_n_steps=50,
     )
 
     trainer.fit(
@@ -181,7 +181,8 @@ def buddy_setup():
     # proc_num = 1
     # proc_num = 8
     sweep_config = "sweep.yaml"
-    proc_num = -1
+    proc_num = 10
+    # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
         hostname = ""
