@@ -1,3 +1,7 @@
 experiment_buddy
 requests
 transformers
+optuna
+
+hydra-core
+hydra-submitit-launcher

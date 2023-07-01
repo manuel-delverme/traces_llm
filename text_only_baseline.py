@@ -1,11 +1,15 @@
 import datetime
-import inspect
 import os.path
-import sys
 
+import hydra
+import optuna
 import pytorch_lightning as pl
 import requests
 import torch
+import wandb
+from hydra.core.config_store import ConfigStore
+from optuna.pruners import SuccessiveHalvingPruner
+from optuna.samplers import TPESampler
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
@@ -14,10 +18,12 @@ from transformers import GPT2LMHeadModel
 from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLanguageModeling
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
+import config
 import constants
-import experiment_buddy
-import hyper
 from constants import VOCAB_SIZE
+
+cs = ConfigStore.instance()
+cs.store(name="config", node=config.Config)
 
 DATASET_PATH = 'tiny_shakespeare.txt'
 
@@ -29,15 +35,12 @@ def preprocess_labels(labels):
     return labels
 
 
-class OverfitCallback(pl.callbacks.Callback):
-    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        logs = trainer.callback_metrics
-        should_stop = logs['val_accuracy'] > 0.99
-        trainer.should_stop = trainer.should_stop or bool(should_stop)
-
-
 class GPT2FineTuning(pl.LightningModule):
-    def __init__(self, learning_rate: float):
+    def __init__(self, config: config.ModelConfig):
+        learning_rate = config.learning_rate
+        hidden_size = config.hidden_size
+        num_layers = config.num_layers
+
         super().__init__()
         self.learning_rate = learning_rate
         self.save_hyperparameters()
@@ -47,8 +50,6 @@ class GPT2FineTuning(pl.LightningModule):
 
         # self.head = torch.nn.Linear(self.gpt2.config.hidden_size, VOCAB_SIZE, bias=False)
 
-        hidden_size = hyper.hidden_size
-
         self.head = torch.nn.Sequential(
             torch.nn.Linear(self.gpt2.config.hidden_size, hidden_size),
 
@@ -56,7 +57,7 @@ class GPT2FineTuning(pl.LightningModule):
             *[torch.nn.Sequential(
                 torch.nn.Linear(hidden_size, hidden_size),
                 torch.nn.ReLU(),
-            ) for _ in range(hyper.num_layers)],
+            ) for _ in range(num_layers)],
 
             torch.nn.Linear(hidden_size, VOCAB_SIZE, bias=False),
         )
@@ -70,7 +71,6 @@ class GPT2FineTuning(pl.LightningModule):
         input_ids, attention_mask, labels = batch.data["input_ids"], batch.data["attention_mask"], batch.data["labels"]
 
         logits = self(input_ids, attention_mask)
-
         labels = preprocess_labels(labels)
 
         loss = self.loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
@@ -105,7 +105,6 @@ class GPT2FineTuning(pl.LightningModule):
     def configure_callbacks(self):
         return [
             EarlyStopping(monitor="val_accuracy", mode="max", patience=100),
-            OverfitCallback()
             # ModelCheckpoint(monitor="val_loss"),
         ]
 
@@ -126,10 +125,18 @@ def cache_dataset():
         f.write(dataset)
 
 
-def main(logger: experiment_buddy.WandbWrapper):
+@hydra.main(config_path=".", config_name="config")
+def main(hyper: config.Config):
     cache_dataset()
 
-    model = GPT2FineTuning(learning_rate=hyper.learning_rate)
+    wandb_run = wandb.init(
+        project=constants.PROJECT_NAME,
+        entity=constants.ENTITY,
+        config=hyper,
+        job_type="train",
+    )
+
+    model = GPT2FineTuning(config=hyper.model_config)
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     if tokenizer.pad_token is None:
@@ -141,7 +148,7 @@ def main(logger: experiment_buddy.WandbWrapper):
         block_size=128
     )
     # dataset.examples = dataset.examples[:int(constants.DOWN_SAMPLE_DATASET_RATIO * len(dataset))]
-    assert len(dataset) > constants.DATASET_SIZE
+    assert len(dataset) >= constants.DATASET_SIZE
     dataset.examples = dataset.examples[:constants.DATASET_SIZE]
     print("Dataset size:", len(dataset))
 
@@ -154,7 +161,7 @@ def main(logger: experiment_buddy.WandbWrapper):
 
     trainer = Trainer(
         max_time=datetime.timedelta(hours=1),
-        logger=WandbLogger(experiment=logger.run),
+        logger=WandbLogger(experiment=wandb_run),
         enable_progress_bar=False,
         log_every_n_steps=50,
     )
@@ -166,70 +173,89 @@ def main(logger: experiment_buddy.WandbWrapper):
     )
 
 
-def buddy_setup():
-    experiment_buddy.register_defaults(vars(hyper))
-    import wandb
-    wandb_kwargs = dict(
-        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
-    # esh = ""
-    # hostname = ""
-    # sweep_config = ""
-    # hostname = "cc-beluga"
-    # hostname = "cc-cedar"
-    # hostname = "mila"
-    hostname = "mila"
-    # proc_num = 1
-    # proc_num = 8
-    sweep_config = "sweep.yaml"
-    proc_num = 10
-    # proc_num = -1
-    # hostname = "aws://t4g.micro"
-    if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
-        hostname = ""
-        sweep_config = ""
-    esh = "\n".join(l.strip() for l in """
-    #SBATCH --cpus-per-task=4
-    #SBATCH --mem=8G
-    #SBATCH --time=1:00:00
-    #SBATCH --gres=gpu:1
-        """.strip().split("\n")
-                    ) + "\n"
-    extra_modules = None
-    if hostname == "mila":
-        esh += "#SBATCH --partition=long\n"
-        extra_modules = [
-            "anaconda/3",
-            "cuda/11.1",
-            "pytorch/1.8.1"
-        ]
-    elif "cc" in hostname:
-        esh += "#SBATCH --partition=cpubase_bycore_b4\n"
-        esh += "#SBATCH --account=rrg-dprecup\n"
-        # esh += "#SBATCH --account=rrg-bengioy-ad\n"
-        extra_modules = [
-            "anaconda/3",
-            # "pytorch/1.7", # CC doesn't have pytorch, should be a package
-            "cuda/11.1",
-            "pytorch/1.8.1"
-        ]
-    else:
-        esh = ""
-    has_conda_env_param = inspect.signature(experiment_buddy.deploy).parameters.get("conda_env") is not None
-    if has_conda_env_param:
-        tb = experiment_buddy.deploy(
-            hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
-            proc_num=proc_num,
-            extra_modules=extra_modules, conda_env="traces_llm"
-        )
-    else:
-        tb = experiment_buddy.deploy(
-            hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
-            proc_num=proc_num,
-            extra_modules=extra_modules
-        )
-    return tb
+# def buddy_setup(config: DictConfig):
+#     # experiment_buddy.register_defaults(config)
+#     # import wandb
+#     # esh = ""
+#     # hostname = ""
+#     # sweep_config = ""
+#     # hostname = "cc-beluga"
+#     # hostname = "cc-cedar"
+#     # hostname = "mila"
+#     hostname = "mila"
+#     # proc_num = 1
+#     # proc_num = 8
+#     sweep_config = "sweep.yaml"
+#     proc_num = 10
+#     # proc_num = -1
+#     # hostname = "aws://t4g.micro"
+#     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
+#         hostname = ""
+#         sweep_config = ""
+#     esh = "\n".join(l.strip() for l in """
+#     #SBATCH --cpus-per-task=4
+#     #SBATCH --mem=8G
+#     #SBATCH --time=1:00:00
+#     #SBATCH --gres=gpu:1
+#         """.strip().split("\n")
+#                     ) + "\n"
+#     extra_modules = None
+#     if hostname == "mila":
+#         esh += "#SBATCH --partition=long\n"
+#         extra_modules = [
+#             "anaconda/3",
+#             "cuda/11.1",
+#             "pytorch/1.8.1"
+#         ]
+#     elif "cc" in hostname:
+#         esh += "#SBATCH --partition=cpubase_bycore_b4\n"
+#         esh += "#SBATCH --account=rrg-dprecup\n"
+#         # esh += "#SBATCH --account=rrg-bengioy-ad\n"
+#         extra_modules = [
+#             "anaconda/3",
+#             # "pytorch/1.7", # CC doesn't have pytorch, should be a package
+#             "cuda/11.1",
+#             "pytorch/1.8.1"
+#         ]
+#     else:
+#         esh = ""
+#     has_conda_env_param = inspect.signature(experiment_buddy.deploy).parameters.get("conda_env") is not None
+#     if has_conda_env_param:
+#         tb = experiment_buddy.deploy(
+#             hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
+#             proc_num=proc_num,
+#             extra_modules=extra_modules, conda_env="traces_llm"
+#         )
+#     else:
+#         tb = experiment_buddy.deploy(
+#             hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
+#             proc_num=proc_num,
+#             extra_modules=extra_modules
+#         )
+#     return tb
+
+
+def meta_opt():
+    def objective(trial):
+        # Use trial object to suggest hyperparameters
+        learning_rate = trial.suggest_loguniform('learning_rate', 1e-5, 1e-1)
+        hidden_size = trial.suggest_int('hidden_size', 100, 500)
+        num_layers = trial.suggest_int('num_layers', 1, 5)
+
+        final_accuracy = train()
+        return final_accuracy
+
+    # Create a study with TPE sampler and ASHA pruner
+    study = optuna.create_study(
+        sampler=TPESampler(),
+        pruner=SuccessiveHalvingPruner(),
+        direction='maximize')
+
+    # Conduct the hyperparameter sweep
+    study.optimize(objective, n_trials=100)
 
 
 if __name__ == '__main__':
-    tb_ = buddy_setup()
-    main(tb_)
+    # buddy_setup()
+    # tb_ = buddy_setup()
+    main()  # (tb_)
