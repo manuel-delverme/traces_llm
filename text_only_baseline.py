@@ -1,6 +1,9 @@
 import datetime
 import os.path
+import sys
+import urllib.parse
 
+import git
 import hydra
 import omegaconf
 import optuna
@@ -18,8 +21,11 @@ from transformers import GPT2LMHeadModel
 from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLanguageModeling
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
+import experiment_buddy
+
 import constants
 from constants import VOCAB_SIZE
+from experiment_buddy import git_sync, ask_experiment_id
 
 DATASET_PATH = 'tiny_shakespeare.txt'
 
@@ -121,7 +127,7 @@ def cache_dataset():
         f.write(dataset)
 
 
-@hydra.main(config_path="configs", config_name="config", version_base=None)
+# @hydra.main(config_path="configs", config_name="config", version_base=None)
 def main(hyper: omegaconf.DictConfig):
     cache_dataset()
 
@@ -169,66 +175,77 @@ def main(hyper: omegaconf.DictConfig):
     )
 
 
-# def buddy_setup(config: DictConfig):
-#     # experiment_buddy.register_defaults(config)
-#     # import wandb
-#     # esh = ""
-#     # hostname = ""
-#     # sweep_config = ""
-#     # hostname = "cc-beluga"
-#     # hostname = "cc-cedar"
-#     # hostname = "mila"
-#     hostname = "mila"
-#     # proc_num = 1
-#     # proc_num = 8
-#     sweep_config = "sweep.yaml"
-#     proc_num = 10
-#     # proc_num = -1
-#     # hostname = "aws://t4g.micro"
-#     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
-#         hostname = ""
-#         sweep_config = ""
-#     esh = "\n".join(l.strip() for l in """
-#     #SBATCH --cpus-per-task=4
-#     #SBATCH --mem=8G
-#     #SBATCH --time=1:00:00
-#     #SBATCH --gres=gpu:1
-#         """.strip().split("\n")
-#                     ) + "\n"
-#     extra_modules = None
-#     if hostname == "mila":
-#         esh += "#SBATCH --partition=long\n"
-#         extra_modules = [
-#             "anaconda/3",
-#             "cuda/11.1",
-#             "pytorch/1.8.1"
-#         ]
-#     elif "cc" in hostname:
-#         esh += "#SBATCH --partition=cpubase_bycore_b4\n"
-#         esh += "#SBATCH --account=rrg-dprecup\n"
-#         # esh += "#SBATCH --account=rrg-bengioy-ad\n"
-#         extra_modules = [
-#             "anaconda/3",
-#             # "pytorch/1.7", # CC doesn't have pytorch, should be a package
-#             "cuda/11.1",
-#             "pytorch/1.8.1"
-#         ]
-#     else:
-#         esh = ""
-#     has_conda_env_param = inspect.signature(experiment_buddy.deploy).parameters.get("conda_env") is not None
-#     if has_conda_env_param:
-#         tb = experiment_buddy.deploy(
-#             hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
-#             proc_num=proc_num,
-#             extra_modules=extra_modules, conda_env="traces_llm"
-#         )
-#     else:
-#         tb = experiment_buddy.deploy(
-#             hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
-#             proc_num=proc_num,
-#             extra_modules=extra_modules
-#         )
-#     return tb
+@hydra.main(config_path="configs", config_name="config", version_base=None)
+def deploy(config: omegaconf.DictConfig):
+    # esh = ""
+    # hostname = ""
+    # sweep_config = ""
+    # hostname = "cc-beluga"
+    # hostname = "cc-cedar"
+    hostname = config.deploy.hostname
+    # proc_num = 1
+    # proc_num = 8
+    # sweep_config = "sweep.yaml"
+    # proc_num = config.proc_
+    # proc_num = -1
+    # hostname = "aws://t4g.micro"
+    if sys.gettrace() is not None:
+        hostname = ""
+        sweep_config = ""
+    # esh = "\n".join(l.strip() for l in """
+    # #SBATCH --cpus-per-task=4
+    # #SBATCH --mem=8G
+    # #SBATCH --time=1:00:00
+    # #SBATCH --gres=gpu:1
+    #     """.strip().split("\n")
+    #                ) + "\n"
+
+    git_repo = git.Repo(search_parent_directories=True)
+    experiment_id = experiment_buddy.ask_experiment_id(hostname, sweep="")
+    hash_commit = git_sync(experiment_id, git_repo)
+
+    url = urllib.parse.urlparse(hostname)
+    ssh_executor = experiment_buddy.executors.SSHExecutor(url=url)
+
+    ssh_command = f"bash -l {experiment_buddy.scripts_folder}/run_experiment.sh {git_url} {entrypoint} {hash_commit} {conda_env} {extra_modules}"
+    print("Running", ssh_command)
+    self.ssh_session.run(ssh_command)
+    time.sleep(1)
+
+    extra_modules = None
+    if hostname == "mila":
+        esh += "#SBATCH --partition=long\n"
+        extra_modules = [
+            "anaconda/3",
+            "cuda/11.1",
+            "pytorch/1.8.1"
+        ]
+    elif "cc" in hostname:
+        esh += "#SBATCH --partition=cpubase_bycore_b4\n"
+        esh += "#SBATCH --account=rrg-dprecup\n"
+        # esh += "#SBATCH --account=rrg-bengioy-ad\n"
+        extra_modules = [
+            "anaconda/3",
+            # "pytorch/1.7", # CC doesn't have pytorch, should be a package
+            "cuda/11.1",
+            "pytorch/1.8.1"
+        ]
+    else:
+        esh = ""
+    has_conda_env_param = inspect.signature(experiment_buddy.deploy).parameters.get("conda_env") is not None
+    if has_conda_env_param:
+        tb = experiment_buddy.deploy(
+            hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
+            proc_num=proc_num,
+            extra_modules=extra_modules, conda_env="traces_llm"
+        )
+    else:
+        tb = experiment_buddy.deploy(
+            hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
+            proc_num=proc_num,
+            extra_modules=extra_modules
+        )
+    return tb
 
 
 def meta_opt():
@@ -254,4 +271,5 @@ def meta_opt():
 if __name__ == '__main__':
     # buddy_setup()
     # tb_ = buddy_setup()
-    main()  # (tb_)
+    # main()  # (tb_)
+    deploy()
