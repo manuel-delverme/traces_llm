@@ -1,0 +1,17 @@
+model_config:
+  _target_: text_only_baseline.GPT2FineTuning
+  token_context_len: 8
+  points_in_motor_sequence: 64
+  max_chars_per_token: 20
+  learning_rate: 3e-5
+  num_layers: 1
+  hidden_size: 256
+
+hydra:
+  launcher:
+    # partition: main
+    timeout_min: 60
+
+defaults:
+  # - override hydra/launcher: submitit_slurm
+  - override hydra/launcher: submitit_local

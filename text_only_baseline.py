@@ -2,12 +2,12 @@ import datetime
 import os.path
 
 import hydra
+import omegaconf
 import optuna
 import pytorch_lightning as pl
 import requests
 import torch
 import wandb
-from hydra.core.config_store import ConfigStore
 from optuna.pruners import SuccessiveHalvingPruner
 from optuna.samplers import TPESampler
 from pytorch_lightning import Trainer
@@ -18,12 +18,8 @@ from transformers import GPT2LMHeadModel
 from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLanguageModeling
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
-import config
 import constants
 from constants import VOCAB_SIZE
-
-cs = ConfigStore.instance()
-cs.store(name="config", node=config.Config)
 
 DATASET_PATH = 'tiny_shakespeare.txt'
 
@@ -36,7 +32,7 @@ def preprocess_labels(labels):
 
 
 class GPT2FineTuning(pl.LightningModule):
-    def __init__(self, config: config.ModelConfig):
+    def __init__(self, config):
         learning_rate = config.learning_rate
         hidden_size = config.hidden_size
         num_layers = config.num_layers
@@ -125,8 +121,8 @@ def cache_dataset():
         f.write(dataset)
 
 
-@hydra.main(config_path=".", config_name="config")
-def main(hyper: config.Config):
+@hydra.main(config_path="configs", config_name="config", version_base=None)
+def main(hyper: omegaconf.DictConfig):
     cache_dataset()
 
     wandb_run = wandb.init(

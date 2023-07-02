@@ -197,3 +197,4 @@ data/
 # End of https://www.toptal.com/developers/gitignore/api/python,linux
 /lightning_logs/
 /outputs/
+/multirun/
