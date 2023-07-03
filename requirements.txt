@@ -5,3 +5,4 @@ optuna
 
 hydra-core
 hydra-submitit-launcher
+hydra-optuna-sweeper
