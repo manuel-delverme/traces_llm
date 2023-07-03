@@ -9,8 +9,37 @@ model_config:
 
 hydra:
   launcher:
-    # partition: main
+    gpus_per_node: 1
+    submitit_folder: ${hydra.sweep.dir}/.submitit/%j
     timeout_min: 60
+    tasks_per_node: 1
+    nodes: 1
+    name: ${hydra.job.name}
+    partition: main
+
+  sweeper:
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: 123
+      consider_prior: true
+      prior_weight: 1.0
+      consider_magic_clip: true
+      consider_endpoints: false
+      n_startup_trials: 10
+      n_ei_candidates: 24
+      multivariate: false
+      warn_independent_sampling: true
+    _target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
+    direction: minimize
+    storage: null
+    study_name: sweep_name
+    n_trials: 20
+    n_jobs: 2
+    max_failure_rate: 0.0
+    params:
+      learning_rate: loguniform(1e-5, 1e-1)
+      hidden_size: randint(100, 500)
+      num_layers: randint(1, 5)
 
 deploy:
   hostname: "mila"
@@ -18,3 +47,4 @@ deploy:
 defaults:
   # - override hydra/launcher: submitit_slurm
   - override hydra/launcher: submitit_local
+  - override hydra/sweeper: optuna
