@@ -124,6 +124,7 @@ def cache_dataset():
         f.write(dataset)
 
 
+@hydra.main(config_path="configs", config_name="config", version_base=None)
 def main(hyper: omegaconf.DictConfig):
     cache_dataset()
 
@@ -171,32 +172,19 @@ def main(hyper: omegaconf.DictConfig):
     )
 
 
-@hydra.main(config_path="configs", config_name="config", version_base=None)
-def maybe_deploy(config: omegaconf.DictConfig):
-    if "hydra/launcher=submitit_slurm" in sys.argv or "SLURM_JOB_ID" in os.environ:
-        main(config)
-    else:
-        executor, experiment_folder = deploy(hostname=config.deploy.hostname)
-        # current_cli = " ".join(sys.argv)
-        assert __name__ == "__main__"
-        # name of the file of  currently running script
-        entrypoint = os.path.basename(__file__)
-        executor.run(f"source ~/venv/bin/activate")
-        with executor.ssh_session.cd(experiment_folder):
-            executor.run(f"python {entrypoint} --multirun hydra/launcher=submitit_slurm")
-
-
 def deploy(hostname):
     import experiment_buddy
     git_repo = git.Repo(search_parent_directories=True)
     experiment_id = experiment_buddy.ask_experiment_id(hostname, sweep="")
     hash_commit = experiment_buddy.git_sync(experiment_id, git_repo)
-    # hash_commit = "a393657cb3cb79448b51573f0c71bf66841b6644"
     url = urllib.parse.urlparse(f"ssh://{hostname}")
     executor = experiment_buddy.executors.SSHExecutor(url=url)
     executor.setup_remote(extra_slurm_header=None, working_dir=git_repo.working_dir)
     experiment_folder = executor.remote_checkout(git_url=git_repo.remotes.origin.url, hash_commit=hash_commit)
-    return executor, experiment_folder
+    assert __name__ == "__main__"
+    entrypoint = os.path.basename(__file__)
+    with executor.ssh_session.cd(experiment_folder):
+        executor.run(f"source ~/venv/bin/activate && python3 {entrypoint} --multirun hydra/launcher=submitit_slurm")
 
 
 def meta_opt():
@@ -223,4 +211,4 @@ if __name__ == '__main__':
     # buddy_setup()
     # tb_ = buddy_setup()
     # main()  # (tb_)
-    maybe_deploy()
+    deploy("mila")

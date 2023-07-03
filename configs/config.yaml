@@ -9,8 +9,13 @@ model_config:
 
 hydra:
   launcher:
-    # partition: main
+    gpus_per_node: 1
+    submitit_folder: ${hydra.sweep.dir}/.submitit/%j
     timeout_min: 60
+    tasks_per_node: 1
+    nodes: 1
+    name: ${hydra.job.name}
+    partition: main
 
 deploy:
   hostname: "mila"
