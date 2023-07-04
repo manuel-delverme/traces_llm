@@ -181,11 +181,21 @@ def deploy(hostname):
     url = urllib.parse.urlparse(f"ssh://{hostname}")
     executor = experiment_buddy.executors.SSHExecutor(url=url)
     executor.setup_remote(extra_slurm_header=None, working_dir=git_repo.working_dir)
-    experiment_folder = executor.remote_checkout(git_url=git_repo.remotes.origin.url, hash_commit=hash_commit)
+    # experiment_folder = executor.remote_checkout(git_url=git_repo.remotes.origin.url, hash_commit=hash_commit)
     assert __name__ == "__main__"
     entrypoint = os.path.basename(__file__)
-    with executor.ssh_session.cd(experiment_folder):
-        executor.run(f"source /etc/profile && source ~/venv/bin/activate && python3 {entrypoint} --multirun hydra/launcher=submitit_slurm")
+    # with executor.ssh_session.cd(experiment_folder):
+    #    executor.run(f"screen -S source /etc/profile && source ~/venv/bin/activate && python3 {entrypoint} --multirun hydra/launcher=submitit_slurm")
+
+    # executor.put(os.path.join(git_repo.working_dir, "run_experiment.sh"),
+    #              os.path.join(executor.scripts_folder, "run_experiment.sh"))
+    # Call run_experiment.sh with the following arguments:
+    # GIT_URL =$1
+    # ENTRYPOINT =$2
+    # HASH_COMMIT =$3
+    # with executor.ssh_session.cd(executor.scripts_folder):
+    #     executor.run(
+    #         f"bash {executor.scripts_folder}/run_experiment.sh {git_repo.remotes.origin.url} {entrypoint} {hash_commit}")
 
 
 if __name__ == '__main__':
