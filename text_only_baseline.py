@@ -185,7 +185,7 @@ def deploy(hostname):
     assert __name__ == "__main__"
     entrypoint = os.path.basename(__file__)
     with executor.ssh_session.cd(experiment_folder):
-        executor.run(f"source /etc/profile && source ~/venv/bin/activate && python3 {entrypoint} --multirun hydra/launcher=submitit_slurm")
+        executor.run(f"screen -S source /etc/profile && source ~/venv/bin/activate && python3 {entrypoint} --multirun hydra/launcher=submitit_slurm")
 
 
 if __name__ == '__main__':
