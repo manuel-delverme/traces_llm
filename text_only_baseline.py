@@ -173,23 +173,11 @@ def main(hyper: omegaconf.DictConfig):
     )
 
 
-def deploy(hostname):
-    import experiment_buddy
-    git_repo = git.Repo(search_parent_directories=True)
-    experiment_id = experiment_buddy.ask_experiment_id(hostname, sweep="")
-    hash_commit = experiment_buddy.git_sync(experiment_id, git_repo)
-    url = urllib.parse.urlparse(f"ssh://{hostname}")
-    executor = experiment_buddy.executors.SSHExecutor(url=url)
-    executor.setup_remote(extra_slurm_header=None, working_dir=git_repo.working_dir)
-    experiment_folder = executor.remote_checkout(git_url=git_repo.remotes.origin.url, hash_commit=hash_commit)
-    assert __name__ == "__main__"
-    entrypoint = os.path.basename(__file__)
-    with executor.ssh_session.cd(experiment_folder):
-        executor.run(f"source /etc/profile && source ~/venv/bin/activate && python3 {entrypoint} --multirun hydra/launcher=submitit_slurm")
-
-
 if __name__ == '__main__':
     if "delverme-" in socket.gethostname():
-        deploy("mila")
+        import experiment_buddy
+
+        os.environ['BUDDY_DEBUG_DEPLOYMENT'] = "1"
+        experiment_buddy.deploy(url="hydra://mila")
     else:
         main()
