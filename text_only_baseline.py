@@ -1,15 +1,11 @@
 import datetime
-import logging
+import inspect
 import os.path
-import socket
 import sys
 
-import hydra
-import omegaconf
 import pytorch_lightning as pl
 import requests
 import torch
-import wandb
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
@@ -19,6 +15,8 @@ from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLa
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 import constants
+import experiment_buddy
+import hyper
 from constants import VOCAB_SIZE
 
 DATASET_PATH = 'tiny_shakespeare.txt'
@@ -32,10 +30,10 @@ def preprocess_labels(labels):
 
 
 class GPT2FineTuning(pl.LightningModule):
-    def __init__(self, config):
-        learning_rate = config.learning_rate
-        hidden_size = config.hidden_size
-        num_layers = config.num_layers
+    def __init__(self):
+        learning_rate = hyper.learning_rate
+        hidden_size = hyper.hidden_size
+        num_layers = hyper.num_layers
 
         super().__init__()
         self.learning_rate = learning_rate
@@ -119,18 +117,10 @@ def cache_dataset():
         f.write(dataset)
 
 
-@hydra.main(config_path="configs", config_name="config", version_base=None)
-def main(hyper: omegaconf.DictConfig):
+def main(logger: experiment_buddy.WandbWrapper):
     cache_dataset()
 
-    wandb_run = wandb.init(
-        project=constants.PROJECT_NAME,
-        entity=constants.ENTITY,
-        config=hyper,
-        job_type="train",
-    )
-
-    model = GPT2FineTuning(config=hyper.model_config)
+    model = GPT2FineTuning()
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     if tokenizer.pad_token is None:
@@ -155,7 +145,7 @@ def main(hyper: omegaconf.DictConfig):
 
     trainer = Trainer(
         max_time=datetime.timedelta(hours=hyper.training_hours),
-        logger=WandbLogger(experiment=wandb_run),
+        logger=WandbLogger(experiment=logger.run),
         enable_progress_bar=False,
         log_every_n_steps=50,
     )
@@ -167,15 +157,70 @@ def main(hyper: omegaconf.DictConfig):
     )
 
 
-if __name__ == '__main__':
-    logger = logging.getLogger("submitit")
-    logger.setLevel(logging.DEBUG)
-    if "delverme-" in socket.gethostname() and sys.gettrace() is None:
-        import experiment_buddy
-
-        # os.environ['BUDDY_DEBUG_DEPLOYMENT'] = "1"
-        experiment_buddy.deploy(url="hydra://mila")
+def buddy_setup():
+    experiment_buddy.register_defaults(vars(hyper))
+    import wandb
+    wandb_kwargs = dict(
+        monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
+    # esh = ""
+    # hostname = ""
+    # sweep_config = ""
+    # hostname = "cc-beluga"
+    # hostname = "cc-cedar"
+    # hostname = "mila"
+    hostname = "mila"
+    # proc_num = 1
+    proc_num = 8
+    sweep_config = "sweep.yaml"
+    # sweep_config = ""
+    # proc_num = -1
+    # hostname = "aws://t4g.micro"
+    if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
+        hostname = ""
+        sweep_config = ""
+    esh = "\n".join(l.strip() for l in """
+    #SBATCH --cpus-per-task=4
+    #SBATCH --mem=8G
+    #SBATCH --time=1:00:00
+    #SBATCH --gres=gpu:1
+        """.strip().split("\n")
+                    ) + "\n"
+    extra_modules = None
+    if hostname == "mila":
+        esh += "#SBATCH --partition=long\n"
+        extra_modules = [
+            "anaconda/3",
+            "cuda/11.1",
+            "pytorch/1.8.1"
+        ]
+    elif "cc" in hostname:
+        esh += "#SBATCH --partition=cpubase_bycore_b4\n"
+        esh += "#SBATCH --account=rrg-dprecup\n"
+        # esh += "#SBATCH --account=rrg-bengioy-ad\n"
+        extra_modules = [
+            "anaconda/3",
+            # "pytorch/1.7", # CC doesn't have pytorch, should be a package
+            "cuda/11.1",
+            "pytorch/1.8.1"
+        ]
     else:
-        # cs = ConfigStore.instance()
-        # cs.repo["hydra"]["launcher"]["submitit_local.yaml"]
-        main()
+        esh = ""
+    has_conda_env_param = inspect.signature(experiment_buddy.deploy).parameters.get("conda_env") is not None
+    if has_conda_env_param:
+        tb = experiment_buddy.deploy(
+            hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
+            proc_num=proc_num,
+            extra_modules=extra_modules, conda_env="traces_llm"
+        )
+    else:
+        tb = experiment_buddy.deploy(
+            hostname, wandb_kwargs=wandb_kwargs, extra_slurm_headers=esh, sweep_definition=sweep_config,
+            proc_num=proc_num,
+            extra_modules=extra_modules
+        )
+    return tb
+
+
+if __name__ == '__main__':
+    tb_ = buddy_setup()
+    main(tb_)
