@@ -2,18 +2,14 @@ import datetime
 import os.path
 import socket
 import sys
-import urllib.parse
 
-import git
 import hydra
 import omegaconf
-import optuna
 import pytorch_lightning as pl
 import requests
 import torch
 import wandb
-from optuna.pruners import SuccessiveHalvingPruner
-from optuna.samplers import TPESampler
+from hydra.core.config_store import ConfigStore
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
@@ -47,8 +43,6 @@ class GPT2FineTuning(pl.LightningModule):
 
         self.gpt2 = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True)
         self.gpt2.requires_grad_(False)
-
-        # self.head = torch.nn.Linear(self.gpt2.config.hidden_size, VOCAB_SIZE, bias=False)
 
         self.head = torch.nn.Sequential(
             torch.nn.Linear(self.gpt2.config.hidden_size, hidden_size),
@@ -154,13 +148,13 @@ def main(hyper: omegaconf.DictConfig):
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=8,
+        batch_size=hyper.batch_size,
         num_workers=0,
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
     trainer = Trainer(
-        max_time=datetime.timedelta(hours=1),
+        max_time=datetime.timedelta(hours=hyper.training_hours),
         logger=WandbLogger(experiment=wandb_run),
         enable_progress_bar=False,
         log_every_n_steps=50,
@@ -174,10 +168,11 @@ def main(hyper: omegaconf.DictConfig):
 
 
 if __name__ == '__main__':
-    if "delverme-" in socket.gethostname():
+    if "delverme-" in socket.gethostname() and sys.gettrace() is None:
         import experiment_buddy
-
-        os.environ['BUDDY_DEBUG_DEPLOYMENT'] = "1"
+        # os.environ['BUDDY_DEBUG_DEPLOYMENT'] = "1"
         experiment_buddy.deploy(url="hydra://mila")
     else:
+        # cs = ConfigStore.instance()
+        # cs.repo["hydra"]["launcher"]["submitit_local.yaml"]
         main()
