@@ -10,6 +10,7 @@ import pytorch_lightning as pl
 import requests
 import torch
 import wandb
+from hydra.core.config_store import ConfigStore
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
@@ -148,13 +149,13 @@ def main(hyper: omegaconf.DictConfig):
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=hyper.batch_size,
+        batch_size=hyper.experiment.batch_size,
         num_workers=0,
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
     trainer = Trainer(
-        max_time=datetime.timedelta(hours=hyper.training_hours),
+        max_time=datetime.timedelta(hours=hyper.experiment.training_hours),
         logger=WandbLogger(experiment=wandb_run),
         enable_progress_bar=False,
         log_every_n_steps=50,
