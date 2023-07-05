@@ -4,5 +4,3 @@ VOCAB_SIZE = 26 ** 3
 assert VOCAB_SIZE > 1
 DATASET_SIZE = 32777
 MAX_CHARS_PER_TOKEN = 20
-PROJECT_NAME = "traces_llm"
-ENTITY = "delvermm"
