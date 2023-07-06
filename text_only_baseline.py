@@ -9,6 +9,7 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
 from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLanguageModeling
@@ -38,6 +39,8 @@ class GPT2FineTuning(pl.LightningModule):
         super().__init__()
         self.learning_rate = learning_rate
         self.save_hyperparameters()
+
+        self.best_validation_loss = float('inf')
 
         self.gpt2 = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True)
         self.gpt2.requires_grad_(False)
@@ -86,9 +89,12 @@ class GPT2FineTuning(pl.LightningModule):
 
         accuracy = sum(correct) / correct.numel()
 
+        if loss < self.best_validation_loss:
+            self.best_validation_loss = loss
+
         self.log('val_loss', loss, on_epoch=True, prog_bar=True)
         self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True)
-        # , "val_loss", loss
+        self.log('best_val_loss', self.best_validation_loss, on_epoch=True, prog_bar=True)
 
     def configure_optimizers(self):
         # return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
@@ -131,13 +137,23 @@ def main(logger: experiment_buddy.WandbWrapper):
         file_path=DATASET_PATH,
         block_size=128
     )
-    # dataset.examples = dataset.examples[:int(constants.DOWN_SAMPLE_DATASET_RATIO * len(dataset))]
-    assert len(dataset) >= constants.DATASET_SIZE
-    dataset.examples = dataset.examples[:constants.DATASET_SIZE]
-    print("Dataset size:", len(dataset))
+    if constants.DATASET_SIZE is not None:
+        assert len(dataset) >= constants.DATASET_SIZE
+        dataset.examples = dataset.examples[:constants.DATASET_SIZE]
+        print("Dataset size:", len(dataset))
+
+    train_dataset, val_dataset = train_test_split(dataset, test_size=0.2)
 
     train_dataloader = torch.utils.data.DataLoader(
-        dataset,
+        train_dataset,
+        batch_size=hyper.batch_size,
+        num_workers=0,
+        shuffle=True,
+        collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+    )
+
+    valid_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
         batch_size=hyper.batch_size,
         num_workers=0,
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
@@ -153,7 +169,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     trainer.fit(
         model,
         train_dataloaders=train_dataloader,
-        val_dataloaders=train_dataloader,
+        val_dataloaders=valid_dataloader,
     )
 
 
