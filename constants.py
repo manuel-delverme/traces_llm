@@ -1,6 +1,8 @@
+import sys
+
 TEXT_PADDING_ID = 0  # TODO: Change this to the correct padding ID for your tokenizer
 GPT2_VOCAB_SIZE = 50257
-VOCAB_SIZE = 26 ** 3
+VOCAB_SIZE = GPT2_VOCAB_SIZE  # sys.maxsize  # 26 ** 3
 assert VOCAB_SIZE > 1
 DATASET_SIZE = None  # 32777
 

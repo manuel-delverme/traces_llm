@@ -96,6 +96,12 @@ class GPT2FineTuning(pl.LightningModule):
         self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True)
         self.log('best_val_loss', self.best_validation_loss, on_epoch=True, prog_bar=True)
 
+        valid_predicted_list = valid_predicted.tolist()
+        valid_labels_list = valid_labels.tolist()
+
+        transposed_data = list(map(list, zip(*[valid_predicted_list, valid_labels_list])))
+        self.logger.log_text('validation_results', columns=['Predictions', 'Actual Labels'], data=transposed_data)
+
     def configure_optimizers(self):
         # return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
@@ -125,8 +131,6 @@ def cache_dataset():
 
 def main(logger: experiment_buddy.WandbWrapper):
     cache_dataset()
-
-    model = GPT2FineTuning()
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     if tokenizer.pad_token is None:
@@ -165,7 +169,7 @@ def main(logger: experiment_buddy.WandbWrapper):
         enable_progress_bar=False,
         log_every_n_steps=50,
     )
-
+    model = GPT2FineTuning()
     trainer.fit(
         model,
         train_dataloaders=train_dataloader,
@@ -180,15 +184,13 @@ def buddy_setup():
         monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
     # esh = ""
     # hostname = ""
-    # sweep_config = ""
+    sweep_config = ""
+    proc_num = 1
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    # proc_num = 1
-    proc_num = 8
-    sweep_config = "sweep.yaml"
-    # sweep_config = ""
+    # sweep_config = "sweep.yaml"
     # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
