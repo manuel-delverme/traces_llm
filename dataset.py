@@ -1,16 +1,29 @@
 import dataclasses
 import os
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
+import requests
 import torch
+from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, LineByLineTextDataset
 
 import constants
 import hyper
 from utils import DataSample
+
+
+def cache_dataset():
+    if os.path.exists(constants.TEXT_DATASET_PATH):
+        print("Dataset already cached")
+        return
+
+    response = requests.get(constants.DATA_URL)
+    response.raise_for_status()
+
+    with open(constants.TEXT_DATASET_PATH, 'w') as f:
+        f.write(response.text)
 
 
 def resample_stroke(stroke, num_samples=100):
@@ -32,6 +45,14 @@ def normalize_trace(trace, min_x, max_x, min_y, max_y):
     ], axis=1)
 
 
+@dataclasses.dataclass
+class DataSpec:
+    use_images: bool
+    use_motor_traces: bool
+    points_in_motor_sequence: int = hyper.POINTS_IN_MOTOR_SEQUENCE
+    image_size: int = hyper.IMAGE_SIZE
+
+
 class MultimodalTransform:
     def __init__(self, image_transform, trace_transform):
         self.image_transform = image_transform
@@ -42,7 +63,10 @@ class MultimodalTransform:
 
 
 class OmniglotDataset(Dataset):
-    def __init__(self, img_dir: str, stroke_dir: str, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
+    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
+        img_dir = data_spec.use_images
+        stroke_dir = data_spec.use_motor_traces
+
         self.img_dir = os.path.join(img_dir, alphabet_name)
         self.stroke_dir = os.path.join(stroke_dir, alphabet_name)
         self.dataset_size = self._calculate_dataset_size()
@@ -299,3 +323,18 @@ def calc_size(obj):
         else:
             size += v.element_size() * v.nelement()
     return size
+
+
+def get_text_dataset(tokenizer):
+    cache_dataset()
+    dataset = LineByLineTextDataset(
+        tokenizer=tokenizer,
+        file_path=constants.TEXT_DATASET_PATH,
+        block_size=128
+    )
+    if constants.DATASET_SIZE is not None:
+        assert len(dataset) >= constants.DATASET_SIZE
+        dataset.examples = dataset.examples[:constants.DATASET_SIZE]
+        print("Dataset size:", len(dataset))
+    train_dataset, val_dataset = train_test_split(dataset, test_size=0.2)
+    return train_dataset, val_dataset
