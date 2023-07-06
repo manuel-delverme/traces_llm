@@ -9,6 +9,7 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
 from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLanguageModeling
@@ -131,13 +132,23 @@ def main(logger: experiment_buddy.WandbWrapper):
         file_path=DATASET_PATH,
         block_size=128
     )
-    # dataset.examples = dataset.examples[:int(constants.DOWN_SAMPLE_DATASET_RATIO * len(dataset))]
-    assert len(dataset) >= constants.DATASET_SIZE
-    dataset.examples = dataset.examples[:constants.DATASET_SIZE]
-    print("Dataset size:", len(dataset))
+    if constants.DATASET_SIZE is not None:
+        assert len(dataset) >= constants.DATASET_SIZE
+        dataset.examples = dataset.examples[:constants.DATASET_SIZE]
+        print("Dataset size:", len(dataset))
+
+    train_dataset, val_dataset = train_test_split(dataset, test_size=0.2)
 
     train_dataloader = torch.utils.data.DataLoader(
-        dataset,
+        train_dataset,
+        batch_size=hyper.batch_size,
+        num_workers=0,
+        shuffle=True,
+        collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+    )
+
+    valid_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
         batch_size=hyper.batch_size,
         num_workers=0,
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
@@ -153,7 +164,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     trainer.fit(
         model,
         train_dataloaders=train_dataloader,
-        val_dataloaders=train_dataloader,
+        val_dataloaders=valid_dataloader,
     )
 
 
