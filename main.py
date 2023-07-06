@@ -117,7 +117,7 @@ def load_text_dataset():
         line for line in text_set.split('\n') if valid_line(line)
     ]
 
-    text_set = text_set[:int(len(text_set) * constants.DOWN_SAMPLE_DATASET_RATIO)]
+    text_set = text_set[:constants.DATASET_SIZE]
 
     text_train_set = text_set[:int(len(text_set) * 0.8)]
     text_test_set = text_set[int(len(text_set) * 0.8):]

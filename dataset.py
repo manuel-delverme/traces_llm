@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import constants
+import hyper
 from utils import DataSample
 
 
@@ -131,7 +132,7 @@ class OmniglotDataset(Dataset):
     def _resample_traces(self, motor_traces):
         return [
             resample_stroke(
-                stroke, num_samples=constants.POINTS_IN_MOTOR_SEQUENCE // len(motor_traces)) for stroke in motor_traces
+                stroke, num_samples=hyper.POINTS_IN_MOTOR_SEQUENCE // len(motor_traces)) for stroke in motor_traces
         ]
 
     def _process_image_and_traces(self, image, resampled_motor_traces):
@@ -148,7 +149,7 @@ class OmniglotDataset(Dataset):
         return image_so_far, all_traces
 
     def _merge_traces(self, all_traces):
-        motor_traces = np.zeros((constants.POINTS_IN_MOTOR_SEQUENCE, 2))
+        motor_traces = np.zeros((hyper.POINTS_IN_MOTOR_SEQUENCE, 2))
         motor_traces_ = np.array(all_traces, dtype=np.float32)
         motor_traces[-len(motor_traces_):] = motor_traces_
         return motor_traces
@@ -206,7 +207,7 @@ class TextTraceDataset(Dataset):
     def __getitem__(self, idx):
         sentence_to_encode = self.text_dataset[idx]
         encoded_text = self.tokenizer.encode_plus(
-            sentence_to_encode, truncation=True, max_length=constants.TOKEN_CONTEXT_LEN, padding='max_length',
+            sentence_to_encode, truncation=True, max_length=hyper.TOKEN_CONTEXT_LEN, padding='max_length',
             return_tensors='pt'
         )
 
@@ -228,7 +229,7 @@ class TextTraceDataset(Dataset):
             char_context = np.array(text_so_far)
 
             left_padded_char_context = np.pad(
-                char_context, (constants.TOKEN_CONTEXT_LEN - len(char_context), 0), 'constant',
+                char_context, (hyper.TOKEN_CONTEXT_LEN - len(char_context), 0), 'constant',
                 constant_values=constants.TEXT_PADDING_ID)
 
             left_padded_images = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_images.shape[1:])

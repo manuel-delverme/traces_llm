@@ -2,7 +2,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, POINTS_IN_MOTOR_SEQUENCE, MAX_CHARS_PER_TOKEN
+from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, MAX_CHARS_PER_TOKEN
+from hyper import POINTS_IN_MOTOR_SEQUENCE
 from utils import DataSample
 
 
