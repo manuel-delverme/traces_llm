@@ -1,14 +1,14 @@
-import requests
 import torch
 import tqdm
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from transformers import AdamW
 
-import constants
 import dataset
+import hyper
 from models import MultimodalLLM
-from utils import flatten_batch_and_sequence_dims, DataSample
+from utils import flatten_batch_and_sequence_dims
+from dataset import DataSample
 
 LEARNING_RATE = 1e-5
 
@@ -77,52 +77,8 @@ def main():
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
     trainer = Trainer(device, model, optimizer)
 
-    img_dir = '/home/delverme/Downloads/images_background_small1'
-    stroke_dir = '/home/delverme/Downloads/strokes_background_small1/strokes_background_small1'
-
-    multimodal_transforms = dataset.MultimodalTransform(
-        transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((28, 28)),
-            transforms.ToTensor()
-        ]),
-        transforms.Compose([
-            transforms.Lambda(lambda x: torch.Tensor(x))
-        ])
-    )
-
-    omniglot_train_set = dataset.OmniglotDataset(img_dir, stroke_dir, transforms=multimodal_transforms)
-    omniglot_test_set = dataset.OmniglotDataset(img_dir, stroke_dir, transforms=multimodal_transforms)
-
-    text_test_set, text_train_set = load_text_dataset()
-
-    train_set = dataset.MemoryCachedTextTraceDataset(omniglot_train_set, text_train_set)
-    test_set = dataset.MemoryCachedTextTraceDataset(omniglot_test_set, text_test_set)
 
     fine_tune(trainer, train_set, test_set)
-
-
-def load_text_dataset():
-    data_url = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
-    text_set = requests.get(data_url).text
-
-    def valid_line(line):
-        if len(line) < 10:
-            return False
-        if len(line.split(' ')) == 1:
-            return False
-        return True
-
-    text_set = [
-        line for line in text_set.split('\n') if valid_line(line)
-    ]
-
-    text_set = text_set[:constants.DATASET_SIZE]
-
-    text_train_set = text_set[:int(len(text_set) * 0.8)]
-    text_test_set = text_set[int(len(text_set) * 0.8):]
-
-    return text_test_set, text_train_set
 
 
 if __name__ == '__main__':

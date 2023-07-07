@@ -1,16 +1,32 @@
 import dataclasses
 import os
-import sys
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
+import requests
 import torch
+import transformers
+from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from torchvision import transforms
+from transformers import PreTrainedTokenizer, BatchEncoding
 
 import constants
 import hyper
-from utils import DataSample
+from presets import get_default_tokenizer
+
+
+def cache_dataset():
+    if os.path.exists(constants.TEXT_DATASET_PATH):
+        print("Dataset already cached")
+        return
+
+    response = requests.get(constants.DATA_URL)
+    response.raise_for_status()
+
+    with open(constants.TEXT_DATASET_PATH, 'w') as f:
+        f.write(response.text)
 
 
 def resample_stroke(stroke, num_samples=100):
@@ -32,6 +48,14 @@ def normalize_trace(trace, min_x, max_x, min_y, max_y):
     ], axis=1)
 
 
+@dataclasses.dataclass
+class DataSpec:
+    use_images: bool
+    use_motor_traces: bool
+    points_in_motor_sequence: int = hyper.POINTS_IN_MOTOR_SEQUENCE
+    image_size: int = hyper.IMAGE_SIZE
+
+
 class MultimodalTransform:
     def __init__(self, image_transform, trace_transform):
         self.image_transform = image_transform
@@ -42,9 +66,12 @@ class MultimodalTransform:
 
 
 class OmniglotDataset(Dataset):
-    def __init__(self, img_dir: str, stroke_dir: str, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
-        self.img_dir = os.path.join(img_dir, alphabet_name)
-        self.stroke_dir = os.path.join(stroke_dir, alphabet_name)
+    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
+        self.use_images = data_spec.use_images
+        self.use_motor_traces = data_spec.use_motor_traces
+
+        self.img_dir = os.path.join(constants.IMG_PATH, alphabet_name)
+        self.stroke_dir = os.path.join(constants.TRACES_PATH, alphabet_name)
         self.dataset_size = self._calculate_dataset_size()
         self.transforms = transforms
 
@@ -80,11 +107,15 @@ class OmniglotDataset(Dataset):
         token_images = []
         token_traces = []
 
+        if not (self.use_images or self.use_motor_traces):
+            return None, None
+
         if token == '<|endoftext|>':
             token = " "  # TODO: we are aliasing the space character to end of text
 
         for char in token:
             character_id = ord(char) - ord('a')
+            assert 0 <= character_id < 26 or char == ' '
 
             if character_id == ord(' ') - ord('a'):
                 image_so_far, motor_traces = self.char_id_to_sample(ord('a') - ord('a'), rep_idx)
@@ -107,11 +138,16 @@ class OmniglotDataset(Dataset):
         token_images = torch.stack(token_images, dim=0)
         token_traces = torch.stack(token_traces, dim=0)
 
+        if not self.use_images:
+            token_images = None
+        if not self.use_motor_traces:
+            token_traces = None
+
         return token_images, token_traces
 
     def char_id_to_sample(self, character_id, rep_idx):
-        character_id = f"character{character_id + 1:02d}"
-        fn_stk, fn_img = self._get_file_names(character_id, rep_idx)
+        character_id_str = f"character{character_id + 1:02d}"
+        fn_stk, fn_img = self._get_file_names(character_id_str, rep_idx)
         motor_traces = self._load_motor(fn_stk)
         resampled_motor_traces = self._resample_traces(motor_traces)
         image = self._load_img(fn_img)
@@ -187,90 +223,82 @@ def clean_token(token):
     if token.startswith('<|') and token.endswith('|>'):
         return token
     text = ''.join([clean_char(c) for c in token])
-    return text
+    if text == '':
+        text = " "
+    return text.lower()
 
 
-class TextTraceDataset(Dataset):
-    def __init__(self, omniglot_dataset, text_dataset):
+class MergeDatasets(Dataset):
+    def __init__(self, omniglot_dataset: OmniglotDataset, text_dataset: List[str], tokenizer: PreTrainedTokenizer):
         super().__init__()
         self.omniglot_dataset = omniglot_dataset
         self.text_dataset = text_dataset
-
-        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.language_model = AutoModelForCausalLM.from_pretrained("gpt2")
+        self.tokenizer = tokenizer
+        self.empty_token, = self.tokenizer.encode(constants.EMPTY_CHAR, add_special_tokens=False)
 
     def __len__(self):
         return min(len(self.omniglot_dataset), len(self.text_dataset))
 
     @torch.no_grad()
     def __getitem__(self, idx):
-        sentence_to_encode = self.text_dataset[idx]
-        encoded_text = self.tokenizer.encode_plus(
-            sentence_to_encode, truncation=True, max_length=hyper.TOKEN_CONTEXT_LEN, padding='max_length',
-            return_tensors='pt'
-        )
-
-        token_ids, = encoded_text.data['input_ids']
-        encoding, = encoded_text.encodings
-
-        tokens = encoding.tokens
-        tokens = [clean_token(t) for t in tokens]
+        # Does not return an item but rather a decomposition of a sentence into several items
+        sentence = self.text_dataset[idx]
 
         images = []
         text_so_far = []
 
         motor_contexts = []
         text_contexts = []
+        sentence_tokens = sentence["input_ids"].tolist()
+        # assert len(sentence_tokens) <= constants.MAX_CHARS_PER_TOKEN, "too many characters in a single token"
 
-        for token_idx, token in zip(token_ids, tokens):
+        # reversed_sentence = self.tokenizer.decode(sentence_tokens, clean_up_tokenization_spaces=True)
+        # tokenized_target = self.tokenizer.tokenize(reversed_sentence)
+
+        for token_idx in sentence_tokens:
+            token = self.tokenizer.decode(token_idx, clean_up_tokenization_spaces=True).lower()
+            token = clean_token(token)
+
             token_images, token_motor_traces = self.omniglot_dataset[token]
 
             char_context = np.array(text_so_far)
 
+            assert len(char_context) <= hyper.TOKEN_CONTEXT_LEN, "not enough context to represent the full token"
             left_padded_char_context = np.pad(
                 char_context, (hyper.TOKEN_CONTEXT_LEN - len(char_context), 0), 'constant',
-                constant_values=constants.TEXT_PADDING_ID)
+                constant_values=self.tokenizer.pad_token_id)
 
-            left_padded_images = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_images.shape[1:])
-            left_padded_images[-len(token_images):] = token_images
+            if token_images is not None:
+                assert len(token_images) <= constants.MAX_CHARS_PER_TOKEN, "too many images for a single token"
+                left_padded_images = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_images.shape[1:])
+                left_padded_images[-len(token_images):] = token_images
+                images.append(left_padded_images)
 
-            left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
-            left_padded_motor_traces[-len(token_motor_traces):] = token_motor_traces
+            if token_motor_traces is not None:
+                left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
+                left_padded_motor_traces[-len(token_motor_traces):] = token_motor_traces
+                motor_contexts.append(left_padded_motor_traces)
 
-            # TODO: the mod is temporary
-            text_so_far.append(token_idx % constants.VOCAB_SIZE)
-
-            # assert token_idx <= constants.VOCAB_SIZE
-            # text_so_far.append(token_idx.item())
+            text_so_far.append(token_idx)
 
             if constants.TEXT_PADDING_ID in text_so_far:
                 print("Found padding token in text so far, returning another sample")
                 return self[idx + 1]
 
-            images.append(left_padded_images)
-            motor_contexts.append(left_padded_motor_traces)
             text_contexts.append(left_padded_char_context)
 
-        token_context_ids = torch.tensor(np.array(text_contexts), dtype=torch.long)
-
-        next_token_logits = self.language_model(token_context_ids).logits[:, -1, :]
-
-        # Downcast to float16 to save memory
-        next_token_logits = next_token_logits.to(dtype=torch.float16)
-
         batch = DataSample(
-            images=torch.stack(images, dim=0),
-            motor_context=torch.stack(motor_contexts, dim=0),
-            next_token_logits=next_token_logits,
+            image_context=torch.stack(images, dim=0) if len(images) > 0 else None,
+            motor_context=torch.stack(motor_contexts, dim=0) if len(motor_contexts) > 0 else None,
+            token_context=torch.from_numpy(np.array(text_contexts)).to(dtype=torch.long),
             labels=torch.tensor(text_so_far, dtype=torch.long),
         )
         return dataclasses.asdict(batch)
 
 
-class MemoryCachedTextTraceDataset(TextTraceDataset):
-    def __init__(self, omniglot_dataset, text_dataset):
-        super().__init__(omniglot_dataset, text_dataset)
+class MemoryCachedMergedDataset(MergeDatasets):
+    def __init__(self, omniglot_dataset, text_dataset, token_map):
+        super().__init__(omniglot_dataset, text_dataset, token_map)
         self.cache = {}
         self.hits = 0
         self.misses = 0
@@ -299,3 +327,69 @@ def calc_size(obj):
         else:
             size += v.element_size() * v.nelement()
     return size
+
+
+class LineByLineTextDataset(transformers.LineByLineTextDataset):
+    def __init__(self, tokenizer: PreTrainedTokenizer, file_path: str, block_size: int):
+        if os.path.isfile(file_path) is False:
+            raise ValueError(f"Input file path {file_path} not found")
+        with open(file_path, encoding="utf-8") as f:
+            lines = [line for line in f.read().splitlines() if (len(line) > 0 and not line.isspace())]
+
+        batch_encoding = tokenizer(lines, add_special_tokens=True, truncation=True, max_length=block_size)
+        self.examples = batch_encoding["input_ids"]
+        self.examples = [{
+            "input_ids": torch.tensor(e, dtype=torch.long),
+            "text": l
+
+        } for e, l in zip(self.examples, lines)]
+
+
+def get_text_dataset(tokenizer):
+    cache_dataset()
+    text_dataset = LineByLineTextDataset(
+        tokenizer=tokenizer,
+        file_path=constants.TEXT_DATASET_PATH,
+        block_size=128
+    )
+    if constants.DATASET_SIZE is not None:
+        assert len(text_dataset) >= constants.DATASET_SIZE
+        text_dataset.examples = text_dataset.examples[:constants.DATASET_SIZE]
+        print("Dataset size:", len(text_dataset))
+    train_dataset, val_dataset = train_test_split(text_dataset, test_size=0.2)
+    return train_dataset, val_dataset
+
+
+def get_multimodal_dataset(data_spec):
+    multimodal_transforms = MultimodalTransform(
+        image_transform=transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((data_spec.image_size, data_spec.image_size)),
+            transforms.ToTensor()
+        ]),
+        trace_transform=transforms.Lambda(lambda x: torch.Tensor(x))
+    )
+    tokenizer = get_default_tokenizer()
+
+    text_test_set, text_train_set = get_text_dataset(tokenizer)
+
+    train_set = MergeDatasets(
+        OmniglotDataset(data_spec, transforms=multimodal_transforms),
+        text_train_set,
+        tokenizer=tokenizer,
+    )
+    test_set = MergeDatasets(
+        OmniglotDataset(data_spec, transforms=multimodal_transforms),
+        text_test_set,
+        tokenizer=tokenizer,
+    )
+    return train_set, test_set
+
+
+@dataclasses.dataclass
+class DataSample:
+    token_context: BatchEncoding
+    labels: Optional[torch.Tensor]
+    image_context: Optional[torch.Tensor] = None
+    motor_context: Optional[torch.Tensor] = None
+    # next_token_logits: Optional[torch.Tensor]

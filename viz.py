@@ -5,7 +5,7 @@ import torch
 import torchvision
 from matplotlib import pyplot as plt
 
-from utils import DataSample
+from dataset import DataSample
 
 
 def visualize_image(images):
@@ -90,7 +90,7 @@ def visualize_one_sample(input_data_sample: DataSample, tokenizer, num_samples=4
 
         # Plot image
         ax_image = fig.add_subplot(num_samples, 2, 2 * sample_idx + 1)
-        images = input_data_sample.images[sample_idx]
+        images = input_data_sample.image_context[sample_idx]
         nrow = int(np.sqrt(images.shape[0]))
         img_grid = torchvision.utils.make_grid(images, nrow=nrow, normalize=False, pad_value=0, value_range=(-1, 1))
         img_grid -= img_grid.min()
