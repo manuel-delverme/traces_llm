@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 import inspect
 import os.path
@@ -106,12 +107,14 @@ class GPT2FineTuning(pl.LightningModule):
             ignore_index=-100)
 
     def training_step(self, batch: DataSample, batch_idx):
+        batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         logits = self(batch)
         loss = self.compute_loss(logits, batch.labels)
         self.log('train_loss', loss, batch_size=batch.labels.numel())
         return loss
 
     def validation_step(self, batch: DataSample, batch_idx):
+        batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         logits = self(batch)
         loss = self.compute_loss(logits, batch.labels)
 

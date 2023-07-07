@@ -1,5 +1,6 @@
 import dataclasses
 import os
+import zipfile
 from typing import List, Optional
 
 import matplotlib.pyplot as plt
@@ -17,7 +18,7 @@ import hyper
 from presets import get_default_tokenizer
 
 
-def cache_dataset():
+def cache_text_dataset():
     if os.path.exists(constants.TEXT_DATASET_PATH):
         print("Dataset already cached")
         return
@@ -65,13 +66,42 @@ class MultimodalTransform:
         return self.image_transform(images), self.trace_transform(motor_traces)
 
 
+# def cache_omniglot_dataset(alphabet_name: str):
+#     img_dir = os.path.join(constants.IMG_PATH, alphabet_name)
+#     stroke_dir = os.path.join(constants.TRACES_PATH, alphabet_name)
+#
+#     if not os.path.exists(img_dir):
+#         # Download from:
+#         # https://github.com/brendenlake/omniglot
+
+def cache_omniglot_dataset():
+    maybe_download("images", constants.IMG_PATH)
+    maybe_download("strokes", constants.TRACES_PATH)
+
+
+def maybe_download(file_name: str, path: str):
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+        strokes_url = f"https://raw.githubusercontent.com/brendenlake/omniglot/master/python/{file_name}_background.zip"
+        r = requests.get(strokes_url)
+        tmp_file = os.path.join(path, f"{file_name}.zip")
+        with open(tmp_file, 'wb') as f:
+            f.write(r.content)
+        with zipfile.ZipFile(tmp_file, 'r') as zip_ref:
+            zip_ref.extractall(path)
+
+
+def get_omniglot_dataset(data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
+    cache_omniglot_dataset()
+    return OmniglotDataset(data_spec, transforms, alphabet_name)
+
+
 class OmniglotDataset(Dataset):
-    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
+    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name):
         self.use_images = data_spec.use_images
         self.use_motor_traces = data_spec.use_motor_traces
-
-        self.img_dir = os.path.join(constants.IMG_PATH, alphabet_name)
-        self.stroke_dir = os.path.join(constants.TRACES_PATH, alphabet_name)
+        self.img_dir = os.path.join(constants.IMG_PATH, "images_background", alphabet_name)
+        self.stroke_dir = os.path.join(constants.TRACES_PATH, "strokes_background", alphabet_name)
         self.dataset_size = self._calculate_dataset_size()
         self.transforms = transforms
 
@@ -197,18 +227,6 @@ class OmniglotDataset(Dataset):
 
     def __len__(self):
         return self.dataset_size
-
-
-if __name__ == '__main__':
-    # Example Usage
-    img_dir = '/home/delverme/Downloads/images_background_small1'
-    stroke_dir = '/home/delverme/Downloads/strokes_background_small1/strokes_background_small1'
-    # alphabet_names = [a for a in os.listdir(img_dir) if a[0] != '.']
-    alphabet_names = ["Latin", ]
-
-    dataset = OmniglotDataset(img_dir, stroke_dir, alphabet_names)
-    sample = dataset[0]  # get a sample
-    image_so_far, trace, prev_chars = sample
 
 
 def clean_char(char):
@@ -347,7 +365,7 @@ class LineByLineTextDataset(transformers.LineByLineTextDataset):
 
 
 def get_text_dataset(tokenizer):
-    cache_dataset()
+    cache_text_dataset()
     text_dataset = LineByLineTextDataset(
         tokenizer=tokenizer,
         file_path=constants.TEXT_DATASET_PATH,
@@ -374,13 +392,16 @@ def get_multimodal_dataset(data_spec):
 
     text_test_set, text_train_set = get_text_dataset(tokenizer)
 
+    # TODO: we are using the same data for train and test, we should split omniglot in two and sample independently
+    omniglot_dataset = get_omniglot_dataset(data_spec, transforms=multimodal_transforms, alphabet_name="Latin")
+
     train_set = MergeDatasets(
-        OmniglotDataset(data_spec, transforms=multimodal_transforms),
+        omniglot_dataset,
         text_train_set,
         tokenizer=tokenizer,
     )
     test_set = MergeDatasets(
-        OmniglotDataset(data_spec, transforms=multimodal_transforms),
+        omniglot_dataset,
         text_test_set,
         tokenizer=tokenizer,
     )
