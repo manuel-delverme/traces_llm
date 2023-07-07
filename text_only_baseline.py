@@ -4,34 +4,63 @@ import os.path
 import sys
 
 import pytorch_lightning as pl
-import requests
 import torch
+import torch.utils.data
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import EarlyStopping
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
-from transformers import GPT2LMHeadModel
-from transformers import GPT2Tokenizer, LineByLineTextDataset, DataCollatorForLanguageModeling
+from transformers import GPT2LMHeadModel, BatchEncoding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
-import constants
+import dataset
 import experiment_buddy
 import hyper
 from constants import VOCAB_SIZE
+from dataset import DataSample
+from presets import get_default_tokenizer
 
-DATASET_PATH = 'tiny_shakespeare.txt'
+
+def get_text_head(input_size, hidden_size, num_layers):
+    return torch.nn.Sequential(
+        torch.nn.Flatten(),
+        torch.nn.Linear(input_size, hidden_size),
+
+        torch.nn.ReLU(),
+        *[torch.nn.Sequential(
+            torch.nn.Linear(hidden_size, hidden_size),
+            torch.nn.ReLU(),
+        ) for _ in range(num_layers)],
+
+        torch.nn.Linear(hidden_size, VOCAB_SIZE, bias=False),
+    )
 
 
-def preprocess_labels(labels):
-    labels = labels.clone()
-    valid = labels != -100
-    labels[valid] = labels[valid] % VOCAB_SIZE
-    return labels
+def get_motor_head(data_spec, hidden_size, num_layers):
+    return torch.nn.Sequential(
+        torch.nn.Linear(data_spec.points_in_motor_sequence, hidden_size),
+        torch.nn.ReLU(),
+        *[torch.nn.Sequential(
+            torch.nn.Linear(hidden_size, hidden_size),
+            torch.nn.ReLU(),
+        ) for _ in range(num_layers)],
+        torch.nn.Linear(hidden_size, 2),
+    )
+
+
+def get_image_head(data_spec, hidden_size, num_layers):
+    return torch.nn.Sequential(
+        torch.nn.Linear(data_spec.image_size, hidden_size),
+        torch.nn.ReLU(),
+        *[torch.nn.Sequential(
+            torch.nn.Linear(hidden_size, hidden_size),
+            torch.nn.ReLU(),
+        ) for _ in range(num_layers)],
+        torch.nn.Linear(hidden_size, 2),
+    )
 
 
 class GPT2FineTuning(pl.LightningModule):
-    def __init__(self):
+    def __init__(self, data_spec: dataset.DataSpec):
         learning_rate = hyper.learning_rate
         hidden_size = hyper.hidden_size
         num_layers = hyper.num_layers
@@ -45,122 +74,126 @@ class GPT2FineTuning(pl.LightningModule):
         self.gpt2 = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True)
         self.gpt2.requires_grad_(False)
 
-        self.head = torch.nn.Sequential(
-            torch.nn.Linear(self.gpt2.config.hidden_size, hidden_size),
+        self.heads = {"text": get_text_head(self.gpt2.config.hidden_size, hidden_size, num_layers)}
+        if data_spec.use_motor_traces:
+            self.heads["motor"] = get_motor_head(data_spec, hidden_size, num_layers)
+        if data_spec.use_images:
+            self.heads["image"] = get_image_head(data_spec, hidden_size, num_layers)
 
-            torch.nn.ReLU(),
-            *[torch.nn.Sequential(
-                torch.nn.Linear(hidden_size, hidden_size),
-                torch.nn.ReLU(),
-            ) for _ in range(num_layers)],
+    def forward(self, batch: DataSample):
+        features = []
+        if batch.token_context is not None:
+            outputs: CausalLMOutputWithCrossAttentions = self.gpt2(
+                input_ids=batch.token_context.input_ids,
+                attention_mask=batch.token_context.attention_mask,
+            )
+            # (batch_size, sequence_length, hidden_size)
+            last_hidden_state = outputs.hidden_states[-1]
+            hidden_state_for_last_token = last_hidden_state[:, -1, :]
 
-            torch.nn.Linear(hidden_size, VOCAB_SIZE, bias=False),
-        )
+            features.append(self.heads["text"](hidden_state_for_last_token))
+        if batch.motor_context is not None:
+            features.append(self.heads["motor"](batch.motor_context))
+        if batch.image_context is not None:
+            features.append(self.heads["image"](batch.image_context))
 
-    def forward(self, input_ids, attention_mask):
-        outputs: CausalLMOutputWithCrossAttentions = self.gpt2(input_ids=input_ids, attention_mask=attention_mask)
-        logits = self.head(outputs.hidden_states[-1])
-        return logits
+        return torch.stack(features, dim=0).sum(dim=0)
 
-    def training_step(self, batch, batch_idx):
-        input_ids, attention_mask, labels = batch.data["input_ids"], batch.data["attention_mask"], batch.data["labels"]
+    def compute_loss(self, logits, labels):
+        return torch.nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            labels.view(-1),
+            ignore_index=-100)
 
-        logits = self(input_ids, attention_mask)
-        labels = preprocess_labels(labels)
-
-        loss = self.loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
-        self.log('train_loss', loss)
+    def training_step(self, batch: DataSample, batch_idx):
+        logits = self(batch)
+        loss = self.compute_loss(logits, batch.labels)
+        self.log('train_loss', loss, batch_size=batch.labels.numel())
         return loss
 
-    def validation_step(self, batch, batch_idx):
-        input_ids, attention_mask, labels = batch.data["input_ids"], batch.data["attention_mask"], batch.data["labels"]
-        labels = preprocess_labels(labels)
-
-        logits = self(input_ids, attention_mask)
-        a = logits.view(-1, logits.size(-1))
-        b = labels.view(-1)
-        loss = self.loss_fn(a, b)
+    def validation_step(self, batch: DataSample, batch_idx):
+        logits = self(batch)
+        loss = self.compute_loss(logits, batch.labels)
 
         _, predicted = torch.max(logits, dim=-1)
-        invalid = labels < 0
+        invalid = batch.labels < 0
         valid_predicted = predicted[~invalid]
-        valid_labels = labels[~invalid]
+        valid_labels = batch.labels[~invalid]
         correct = valid_predicted == valid_labels
 
         accuracy = sum(correct) / correct.numel()
 
+        batch_size = batch.labels.numel()
+
         if loss < self.best_validation_loss:
             self.best_validation_loss = loss
 
-        self.log('val_loss', loss, on_epoch=True, prog_bar=True)
-        self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True)
-        self.log('best_val_loss', self.best_validation_loss, on_epoch=True, prog_bar=True)
+        self.log('val_loss', loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        self.log('best_val_loss', self.best_validation_loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
-        valid_predicted_list = valid_predicted.tolist()
-        valid_labels_list = valid_labels.tolist()
+        # valid_predicted_list = valid_predicted.tolist()
+        # valid_labels_list = valid_labels.tolist()
 
-        transposed_data = list(map(list, zip(*[valid_predicted_list, valid_labels_list])))
-        self.logger.log_text('validation_results', columns=['Predictions', 'Actual Labels'], data=transposed_data)
+        # transposed_data = list(map(list, zip(*[valid_predicted_list, valid_labels_list])))
+        # self.logger.log_text('validation_results', columns=['Predictions', 'Actual Labels'], data=transposed_data)
 
     def configure_optimizers(self):
-        # return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
     def configure_callbacks(self):
         return [
             EarlyStopping(monitor="val_accuracy", mode="max", patience=100),
-            # ModelCheckpoint(monitor="val_loss"),
+            ModelCheckpoint(monitor="val_loss", mode="min", filename="best_model"),
         ]
 
-    @staticmethod
-    def loss_fn(logits, labels):
-        return torch.nn.functional.cross_entropy(logits, labels, ignore_index=-100)
 
+class FlatteningDataCollator:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        # self.llm_collate_fn = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-def cache_dataset():
-    if os.path.exists(DATASET_PATH):
-        print("Dataset already cached")
-        return
+    def __call__(self, batch):
+        elem = batch[0]
 
-    data_url = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
-    dataset = requests.get(data_url).text
+        data = {}
+        for key in elem:
+            rows = [d[key] for d in batch]
 
-    with open(DATASET_PATH, 'w') as f:
-        f.write(dataset)
+            if all(row is None for row in rows):
+                continue
+
+            data[key] = torch.concat(rows, dim=0)
+            if key == "token_context":
+                attention_mask = (data[key] != self.tokenizer.pad_token_id).to(torch.long)
+                data[key] = BatchEncoding(data={"input_ids": data[key], "attention_mask": attention_mask})
+        return DataSample(**data)
 
 
 def main(logger: experiment_buddy.WandbWrapper):
-    cache_dataset()
+    tokenizer = get_default_tokenizer()
 
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    dataset = LineByLineTextDataset(
-        tokenizer=tokenizer,
-        file_path=DATASET_PATH,
-        block_size=128
+    data_spec = dataset.DataSpec(
+        use_images=False,
+        use_motor_traces=False,
     )
-    if constants.DATASET_SIZE is not None:
-        assert len(dataset) >= constants.DATASET_SIZE
-        dataset.examples = dataset.examples[:constants.DATASET_SIZE]
-        print("Dataset size:", len(dataset))
-
-    train_dataset, val_dataset = train_test_split(dataset, test_size=0.2)
+    train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=hyper.batch_size,
         num_workers=0,
         shuffle=True,
-        collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        # collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        collate_fn=FlatteningDataCollator(tokenizer),
     )
-
+    len(train_dataloader)
     valid_dataloader = torch.utils.data.DataLoader(
-        val_dataset,
+        valid_dataset,
         batch_size=hyper.batch_size,
         num_workers=0,
-        collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        # collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        collate_fn=FlatteningDataCollator(tokenizer),
     )
 
     trainer = Trainer(
@@ -169,7 +202,8 @@ def main(logger: experiment_buddy.WandbWrapper):
         enable_progress_bar=False,
         log_every_n_steps=50,
     )
-    model = GPT2FineTuning()
+    model = GPT2FineTuning(data_spec)
+    # TODO: merge the two scripts and models
     trainer.fit(
         model,
         train_dataloaders=train_dataloader,

@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, MAX_CHARS_PER_TOKEN
 from hyper import POINTS_IN_MOTOR_SEQUENCE
-from utils import DataSample
+from dataset import DataSample
 
 
 class TraceEmbeddingModel(nn.Module):
@@ -60,9 +60,9 @@ class MultimodalLLM(nn.Module):
 
     def forward(self, batch: DataSample):
         # images is a tensor of shape (batch_size, seq_len, 1, 28, 28) reshape to process all images at once
-        batch_size, seq_len, _, _, _ = batch.images.shape
+        batch_size, seq_len, _, _, _ = batch.image_context.shape
 
-        flat_images = batch.images.flatten(start_dim=0, end_dim=1)
+        flat_images = batch.image_context.flatten(start_dim=0, end_dim=1)
         image_features = self.image_encoder(flat_images)
         image_features = image_features.unflatten(dim=0, sizes=(batch_size, seq_len))
 
