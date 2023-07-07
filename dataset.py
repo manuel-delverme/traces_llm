@@ -252,8 +252,8 @@ class MergeDatasets(Dataset):
         sentence_tokens = sentence["input_ids"].tolist()
         # assert len(sentence_tokens) <= constants.MAX_CHARS_PER_TOKEN, "too many characters in a single token"
 
-        # reversed_sentence = self.tokenizer.decode(sentence_tokens, clean_up_tokenization_spaces=True)
-        # tokenized_target = self.tokenizer.tokenize(reversed_sentence)
+        # decoded_sentence = self.tokenizer.decode(sentence_tokens, clean_up_tokenization_spaces=True)
+        # tokenized_sentence = self.tokenizer.tokenize(decoded_sentence)
 
         for token_idx in sentence_tokens:
             token = self.tokenizer.decode(token_idx, clean_up_tokenization_spaces=True).lower()
@@ -263,7 +263,8 @@ class MergeDatasets(Dataset):
 
             char_context = np.array(text_so_far)
 
-            assert len(char_context) <= hyper.TOKEN_CONTEXT_LEN, "not enough context to represent the full token"
+            if len(char_context) <= hyper.TOKEN_CONTEXT_LEN:
+                char_context = char_context[-hyper.TOKEN_CONTEXT_LEN:]
             left_padded_char_context = np.pad(
                 char_context, (hyper.TOKEN_CONTEXT_LEN - len(char_context), 0), 'constant',
                 constant_values=self.tokenizer.pad_token_id)

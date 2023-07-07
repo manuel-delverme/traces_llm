@@ -3,3 +3,4 @@ requests
 transformers
 
 scikit-learn
+torchvision
