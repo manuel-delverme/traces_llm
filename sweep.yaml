@@ -29,3 +29,9 @@ parameters:
       - 256
       - 512
       - 1024
+  ^batch_size:
+    values:
+      - 32
+      - 64
+      - 128
+      - 256
