@@ -24,7 +24,7 @@ from presets import get_default_tokenizer
 
 def get_text_head(input_size, hidden_size, num_layers):
     return torch.nn.Sequential(
-        torch.nn.Flatten(),
+        # torch.nn.Flatten(),
         torch.nn.Linear(input_size, hidden_size),
 
         torch.nn.ReLU(),
@@ -123,8 +123,9 @@ class GPT2FineTuning(pl.LightningModule):
                 attention_mask=batch.token_context.attention_mask,
             )
             last_hidden_state = outputs.hidden_states[-1]
-            hidden_state_for_last_token = last_hidden_state[:, -1, :]
-            features.append(hidden_state_for_last_token)
+            features.append(last_hidden_state)
+            # hidden_state_for_last_token = last_hidden_state[:, -1, :]
+            # features.append(hidden_state_for_last_token)
         if batch.motor_context is not None:
             features.append(self.towers["motor"](batch.motor_context))
         if batch.image_context is not None:
@@ -211,7 +212,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     tokenizer = get_default_tokenizer()
 
     data_spec = dataset.DataSpec(
-        use_images=True,
+        use_images=False,
         use_motor_traces=False,
     )
     train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
