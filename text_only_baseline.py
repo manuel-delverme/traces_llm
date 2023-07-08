@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 import inspect
 import os.path
@@ -74,7 +75,7 @@ class GPT2FineTuning(pl.LightningModule):
         self.gpt2 = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True)
         self.gpt2.requires_grad_(False)
 
-        self.heads = {"text": get_text_head(self.gpt2.config.hidden_size, hidden_size, num_layers)}
+        self.heads = torch.nn.ModuleDict({"text": get_text_head(self.gpt2.config.hidden_size, hidden_size, num_layers)})
         if data_spec.use_motor_traces:
             self.heads["motor"] = get_motor_head(data_spec, hidden_size, num_layers)
         if data_spec.use_images:
@@ -87,7 +88,6 @@ class GPT2FineTuning(pl.LightningModule):
                 input_ids=batch.token_context.input_ids,
                 attention_mask=batch.token_context.attention_mask,
             )
-            # (batch_size, sequence_length, hidden_size)
             last_hidden_state = outputs.hidden_states[-1]
             hidden_state_for_last_token = last_hidden_state[:, -1, :]
 
@@ -106,12 +106,14 @@ class GPT2FineTuning(pl.LightningModule):
             ignore_index=-100)
 
     def training_step(self, batch: DataSample, batch_idx):
+        batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         logits = self(batch)
         loss = self.compute_loss(logits, batch.labels)
         self.log('train_loss', loss, batch_size=batch.labels.numel())
         return loss
 
     def validation_step(self, batch: DataSample, batch_idx):
+        batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         logits = self(batch)
         loss = self.compute_loss(logits, batch.labels)
 
