@@ -13,6 +13,7 @@ from pytorch_lightning.loggers import WandbLogger
 from transformers import GPT2LMHeadModel, BatchEncoding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
+import constants
 import dataset
 import experiment_buddy
 import hyper
@@ -36,7 +37,7 @@ def get_text_head(input_size, hidden_size, num_layers):
     )
 
 
-def get_motor_head(data_spec, hidden_size, num_layers):
+def get_motor_tower(data_spec, hidden_size, num_layers):
     return torch.nn.Sequential(
         torch.nn.Linear(data_spec.points_in_motor_sequence, hidden_size),
         torch.nn.ReLU(),
@@ -48,16 +49,43 @@ def get_motor_head(data_spec, hidden_size, num_layers):
     )
 
 
-def get_image_head(data_spec, hidden_size, num_layers):
-    return torch.nn.Sequential(
-        torch.nn.Linear(data_spec.image_size, hidden_size),
+class Permute(torch.nn.Module):
+    def __init__(self, *dims):
+        super().__init__()
+        self.dims = dims
+
+    def forward(self, x):
+        return x.permute(*self.dims)
+
+
+def get_image_tower(data_spec: dataset.DataSpec, hidden_size, num_layers, features_size):
+    layers = [
+        Permute(0, 2, 1, 3, 4),  # Swap sequence and channel dimensions
+        torch.nn.Conv3d(data_spec.image_channels, hidden_size, kernel_size=(3, 3, 3), stride=1, padding=1),
         torch.nn.ReLU(),
-        *[torch.nn.Sequential(
-            torch.nn.Linear(hidden_size, hidden_size),
+        torch.nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
+    ]
+
+    for _ in range(num_layers):
+        layers.extend([
+            torch.nn.Conv3d(hidden_size, hidden_size, kernel_size=(3, 3, 3), stride=1, padding=1),
             torch.nn.ReLU(),
-        ) for _ in range(num_layers)],
-        torch.nn.Linear(hidden_size, 2),
-    )
+            torch.nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
+        ])
+
+    sequence_length = constants.MAX_CHARS_PER_TOKEN
+
+    # Compute the size of the height and width after all max pooling operations
+    side_after_pooling = data_spec.image_side // (2 ** (num_layers + 1))
+
+    feature_map_size = hidden_size * sequence_length * side_after_pooling ** 2
+
+    layers.extend([
+        torch.nn.Flatten(),
+        torch.nn.Linear(feature_map_size, features_size)
+    ])
+
+    return torch.nn.Sequential(*layers)
 
 
 class GPT2FineTuning(pl.LightningModule):
@@ -72,32 +100,39 @@ class GPT2FineTuning(pl.LightningModule):
 
         self.best_validation_loss = float('inf')
 
-        self.gpt2 = GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True)
-        self.gpt2.requires_grad_(False)
+        self.towers = torch.nn.ModuleDict({
+            "text": GPT2LMHeadModel.from_pretrained('gpt2', output_hidden_states=True)
+        })
+        self.towers["text"].requires_grad_(False)
+        features_size = self.towers["text"].config.hidden_size
 
-        self.heads = torch.nn.ModuleDict({"text": get_text_head(self.gpt2.config.hidden_size, hidden_size, num_layers)})
         if data_spec.use_motor_traces:
-            self.heads["motor"] = get_motor_head(data_spec, hidden_size, num_layers)
+            self.towers["motor"] = get_motor_tower(data_spec, hidden_size, num_layers)
+            # self.gpt2.config.hidden_size
         if data_spec.use_images:
-            self.heads["image"] = get_image_head(data_spec, hidden_size, num_layers)
+            self.towers["image"] = get_image_tower(data_spec, hidden_size, num_layers, features_size)
+
+        num_towers = len(self.towers)
+        self.head = get_text_head(input_size=features_size * num_towers, hidden_size=hidden_size, num_layers=num_layers)
 
     def forward(self, batch: DataSample):
         features = []
         if batch.token_context is not None:
-            outputs: CausalLMOutputWithCrossAttentions = self.gpt2(
+            outputs: CausalLMOutputWithCrossAttentions = self.towers["text"](
                 input_ids=batch.token_context.input_ids,
                 attention_mask=batch.token_context.attention_mask,
             )
             last_hidden_state = outputs.hidden_states[-1]
             hidden_state_for_last_token = last_hidden_state[:, -1, :]
-
-            features.append(self.heads["text"](hidden_state_for_last_token))
+            features.append(hidden_state_for_last_token)
         if batch.motor_context is not None:
-            features.append(self.heads["motor"](batch.motor_context))
+            features.append(self.towers["motor"](batch.motor_context))
         if batch.image_context is not None:
-            features.append(self.heads["image"](batch.image_context))
+            features.append(self.towers["image"](batch.image_context))
 
-        return torch.stack(features, dim=0).sum(dim=0)
+        features = torch.concat(features, dim=1)
+        logits = self.head(features)
+        return logits
 
     def compute_loss(self, logits, labels):
         return torch.nn.functional.cross_entropy(
@@ -176,7 +211,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     tokenizer = get_default_tokenizer()
 
     data_spec = dataset.DataSpec(
-        use_images=False,
+        use_images=True,
         use_motor_traces=False,
     )
     train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)

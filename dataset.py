@@ -54,7 +54,8 @@ class DataSpec:
     use_images: bool
     use_motor_traces: bool
     points_in_motor_sequence: int = hyper.POINTS_IN_MOTOR_SEQUENCE
-    image_size: int = hyper.IMAGE_SIZE
+    image_side: int = hyper.IMAGE_SIDE
+    image_channels: int = 1
 
 
 class MultimodalTransform:
@@ -383,7 +384,7 @@ def get_multimodal_dataset(data_spec):
     multimodal_transforms = MultimodalTransform(
         image_transform=transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((data_spec.image_size, data_spec.image_size)),
+            transforms.Resize((data_spec.image_side, data_spec.image_side)),
             transforms.ToTensor()
         ]),
         trace_transform=transforms.Lambda(lambda x: torch.Tensor(x))
