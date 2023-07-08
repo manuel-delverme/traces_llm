@@ -7,5 +7,5 @@ learning_rate = 0.0006247650066162154
 batch_size = 32
 training_hours = 1
 
-num_layers = 0
+num_layers = 1
 hidden_size = 128

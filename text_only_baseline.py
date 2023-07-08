@@ -24,7 +24,7 @@ from presets import get_default_tokenizer
 
 def get_text_head(input_size, hidden_size, num_layers):
     return torch.nn.Sequential(
-        # torch.nn.Flatten(),
+        torch.nn.Flatten(),
         torch.nn.Linear(input_size, hidden_size),
 
         torch.nn.ReLU(),
