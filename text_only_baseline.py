@@ -10,6 +10,7 @@ import torch.utils.data
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.tuner import Tuner
 from transformers import GPT2LMHeadModel, BatchEncoding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
@@ -123,9 +124,9 @@ class GPT2FineTuning(pl.LightningModule):
                 attention_mask=batch.token_context.attention_mask,
             )
             last_hidden_state = outputs.hidden_states[-1]
-            features.append(last_hidden_state)
-            # hidden_state_for_last_token = last_hidden_state[:, -1, :]
-            # features.append(hidden_state_for_last_token)
+            # features.append(last_hidden_state)
+            hidden_state_for_last_token = last_hidden_state[:, -1, :]
+            features.append(hidden_state_for_last_token)
         if batch.motor_context is not None:
             features.append(self.towers["motor"](batch.motor_context))
         if batch.image_context is not None:
@@ -212,7 +213,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     tokenizer = get_default_tokenizer()
 
     data_spec = dataset.DataSpec(
-        use_images=False,
+        use_images=True,
         use_motor_traces=False,
     )
     train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
@@ -241,6 +242,14 @@ def main(logger: experiment_buddy.WandbWrapper):
         log_every_n_steps=50,
     )
     model = GPT2FineTuning(data_spec)
+
+    # tuner = Tuner(trainer)
+    # tuner.scale_batch_size(
+    #     model,
+    #     # train_dataloader,
+    #     mode="binsearch",
+    # )
+
     # TODO: merge the two scripts and models
     trainer.fit(
         model,
@@ -256,13 +265,13 @@ def buddy_setup():
         monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
     # esh = ""
     # hostname = ""
-    sweep_config = ""
-    proc_num = 1
+    # sweep_config = ""
+    proc_num = 8
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    # sweep_config = "sweep.yaml"
+    sweep_config = "sweep.yaml"
     # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
@@ -271,7 +280,7 @@ def buddy_setup():
     esh = "\n".join(l.strip() for l in """
     #SBATCH --cpus-per-task=4
     #SBATCH --mem=8G
-    #SBATCH --time=1:00:00
+    #SBATCH --time=12:00:00
     #SBATCH --gres=gpu:1
         """.strip().split("\n")
                     ) + "\n"
