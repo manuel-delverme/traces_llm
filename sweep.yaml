@@ -6,8 +6,8 @@ command:
   - ${program}
   - ${args}
 metric:
-  name: val_accuracy
-  goal: maximize
+  name: best_val_loss
+  goal: minimize
 method: bayes
 early_terminate:
   type: hyperband
@@ -16,8 +16,8 @@ early_terminate:
 parameters:
   ^learning_rate:
     distribution: log_uniform_values
-    min: 1e-4
-    max: 1e-2
+    min: 5e-4
+    max: 5e-3
   ^num_layers:
     values:
       - 0
@@ -28,4 +28,7 @@ parameters:
       - 128
       - 256
       - 512
-      - 1024
+  ^batch_size:
+    values:
+      - 32
+      - 64
