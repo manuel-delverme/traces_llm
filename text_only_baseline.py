@@ -11,7 +11,6 @@ import torch.utils.data
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
-# from pytorch_lightning.profilers import PyTorchProfiler
 from transformers import GPT2LMHeadModel, BatchEncoding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
@@ -22,7 +21,6 @@ import hyper
 from constants import VOCAB_SIZE
 from dataset import DataSample
 from presets import get_default_tokenizer
-from viz import visualize_one_sample
 
 
 def get_text_head(input_size, hidden_size, num_layers):
@@ -97,7 +95,7 @@ def timeit(f):
         ts = datetime.datetime.now()
         result = f(*args, **kw)
         te = datetime.datetime.now()
-        self.log(f"time/{f.__name__}", (te - ts).total_seconds())
+        self.log(f"time/{f.__name__}", (te - ts).total_seconds(), batch_size=1)
         return result
 
     return timed
@@ -129,18 +127,23 @@ class GPT2FineTuning(pl.LightningModule):
 
         num_towers = len(self.towers)
         self.head = get_text_head(input_size=features_size * num_towers, hidden_size=hidden_size, num_layers=num_layers)
+        self.feats_shape = None
 
     @timeit
     def forward(self, batch: DataSample):
         features = []
         if batch.token_context is not None:
-            outputs: CausalLMOutputWithCrossAttentions = self.towers["text"](
-                input_ids=batch.token_context.input_ids,
-                attention_mask=batch.token_context.attention_mask,
-            )
-            last_hidden_state = outputs.hidden_states[-1]
-            last_hidden_state *= 0
-            hidden_state_for_last_token = last_hidden_state[:, -1, :]
+            if self.feats_shape is None:
+                outputs: CausalLMOutputWithCrossAttentions = self.towers["text"](
+                    input_ids=batch.token_context.input_ids,
+                    attention_mask=batch.token_context.attention_mask,
+                )
+                last_hidden_state = outputs.hidden_states[-1]
+                hidden_state_for_last_token = last_hidden_state[:, -1, :]
+                self.feats_shape = hidden_state_for_last_token.shape[1:]
+            hidden_state_for_last_token = torch.zeros(
+                (batch.token_context.input_ids.shape[0],) + self.feats_shape, device=self.device)
+
             features.append(hidden_state_for_last_token)
         if batch.motor_context is not None:
             features.append(self.towers["motor"](batch.motor_context))
@@ -248,10 +251,11 @@ def main(logger: experiment_buddy.WandbWrapper):
     )
     train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
 
+    num_cpus = os.cpu_count()
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=hyper.batch_size,
-        num_workers=0,
+        num_workers=num_cpus,
         shuffle=True,
         # collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         collate_fn=FlatteningDataCollator(tokenizer),
@@ -260,7 +264,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     valid_dataloader = torch.utils.data.DataLoader(
         valid_dataset,
         batch_size=hyper.batch_size,
-        num_workers=0,
+        num_workers=num_cpus,
         # collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         collate_fn=FlatteningDataCollator(tokenizer),
     )
@@ -289,12 +293,13 @@ def buddy_setup():
     # esh = ""
     # hostname = ""
     # sweep_config = ""
-    proc_num = 1
+    proc_num = 8
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    sweep_config = ""  # sweep.yaml"
+    sweep_config = ""
+    sweep_config = "sweep.yaml"
     # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
@@ -304,7 +309,7 @@ def buddy_setup():
     #SBATCH --cpus-per-task=8
     #SBATCH --mem=64G
     #SBATCH --time=12:00:00
-    #SBATCH --gres=gpu:1
+    #SBATCH --gres=gpu:32gb:1
         """.strip().split("\n")
                     ) + "\n"
     extra_modules = None
