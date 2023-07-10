@@ -1,4 +1,5 @@
 import collections
+from transformers import GPT2Tokenizer
 
 import numpy as np
 import torch
@@ -31,7 +32,6 @@ def visualize_motor_context(ax, motor_context):
 
     matplotlib_color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
-
     offset = 0
     for context_idx in range(context_sequence_len):
         # Loop through the selected time steps
@@ -57,22 +57,19 @@ def visualize_motor_context(ax, motor_context):
         offset += next_offset
 
 
-
-
-def visualize_one_sample(input_data_sample: DataSample, tokenizer, num_samples=4):
-    token_dict = {v: k for k, v in tokenizer.get_vocab().items()}
-    text_context_ids: torch.Tensor = input_data_sample.text_context_ids
+def visualize_one_sample(input_data_sample: DataSample, tokenizer: GPT2Tokenizer, num_samples=4):
+    text_context_ids: torch.Tensor = input_data_sample.token_context.data["input_ids"]
     labels = input_data_sample.labels
 
     # Create a figure
-    fig = plt.figure(figsize=(20, 5 * num_samples))
+
+    num_columns = (input_data_sample.image_context is not None) + (input_data_sample.motor_context is not None)
+    fig = plt.figure(figsize=(10 * num_columns, 5 * num_samples))
 
     for sample_idx in range(num_samples):
-        # Set title as token history
         tokens = text_context_ids[sample_idx].tolist()
-        token_history = [token_dict[token] if token_dict else str(token) for token in tokens]
-        token_str = " ".join(token_history)
-        label_str = token_dict[labels[sample_idx].item()]
+        token_str = tokenizer.decode(tokens, skip_special_tokens=True)
+        label_str = tokenizer.decode(labels[sample_idx].tolist())
 
         # Replace ! with a symbol, replace non alphanumeric characters with empty string
         def filter_chars(c):
@@ -88,22 +85,27 @@ def visualize_one_sample(input_data_sample: DataSample, tokenizer, num_samples=4
         token_str = "".join([filter_chars(c) for c in token_str])
         label_str = "".join([filter_chars(c) for c in label_str])
 
-        # Plot image
-        ax_image = fig.add_subplot(num_samples, 2, 2 * sample_idx + 1)
-        images = input_data_sample.image_context[sample_idx]
-        nrow = int(np.sqrt(images.shape[0]))
-        img_grid = torchvision.utils.make_grid(images, nrow=nrow, normalize=False, pad_value=0, value_range=(-1, 1))
-        img_grid -= img_grid.min()
-        img_grid /= img_grid.max()
-        # Flip black and white
-        img_grid = 1 - img_grid
-        ax_image.imshow(img_grid.permute(1, 2, 0), interpolation='none')
-        ax_image.set_title(token_str + f" => {label_str}", fontsize=12)
-        ax_image.axis('off')
+        column_num = 0
 
-        ax_motor = fig.add_subplot(num_samples, 2, 2 * sample_idx + 2)
-        motor_context = input_data_sample.motor_context[sample_idx]
-        visualize_motor_context(ax_motor, motor_context)
+        if input_data_sample.image_context is not None:
+            images = input_data_sample.image_context[sample_idx]
+            ax_image = fig.add_subplot(num_samples, num_columns, num_columns * sample_idx + 1)
+            nrow = int(np.sqrt(images.shape[0]))
+            img_grid = torchvision.utils.make_grid(images, nrow=nrow, normalize=False, pad_value=0.1,
+                                                   value_range=(-1, 1))
+            img_grid -= img_grid.min()
+            img_grid /= img_grid.max()
+            # Flip black and white
+            img_grid = 1 - img_grid
+            ax_image.imshow(img_grid.permute(1, 2, 0), interpolation='none')
+            ax_image.set_title(token_str + f" => {label_str}", fontsize=12)
+            column_num += 1
+            ax_image.axis('off')
+
+        if input_data_sample.motor_context is not None:
+            ax_motor = fig.add_subplot(num_samples, num_columns, num_columns * sample_idx + 1 + column_num)
+            motor_context = input_data_sample.motor_context[sample_idx]
+            visualize_motor_context(ax_motor, motor_context)
 
     # Adjust spacing between subplots
     plt.subplots_adjust(wspace=0.2, hspace=0.4)
