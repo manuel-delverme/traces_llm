@@ -129,18 +129,23 @@ class GPT2FineTuning(pl.LightningModule):
 
         num_towers = len(self.towers)
         self.head = get_text_head(input_size=features_size * num_towers, hidden_size=hidden_size, num_layers=num_layers)
+        self.fake_feats = None
 
     @timeit
     def forward(self, batch: DataSample):
         features = []
         if batch.token_context is not None:
-            outputs: CausalLMOutputWithCrossAttentions = self.towers["text"](
-                input_ids=batch.token_context.input_ids,
-                attention_mask=batch.token_context.attention_mask,
-            )
-            last_hidden_state = outputs.hidden_states[-1]
-            last_hidden_state *= 0
-            hidden_state_for_last_token = last_hidden_state[:, -1, :]
+            if self.fake_feats is None:
+                outputs: CausalLMOutputWithCrossAttentions = self.towers["text"](
+                    input_ids=batch.token_context.input_ids,
+                    attention_mask=batch.token_context.attention_mask,
+                )
+                last_hidden_state = outputs.hidden_states[-1]
+                hidden_state_for_last_token = last_hidden_state[:, -1, :]
+                self.fake_feats = torch.zeros_like(hidden_state_for_last_token)
+            else:
+                hidden_state_for_last_token = self.fake_feats.clone()
+
             features.append(hidden_state_for_last_token)
         if batch.motor_context is not None:
             features.append(self.towers["motor"](batch.motor_context))
@@ -289,12 +294,13 @@ def buddy_setup():
     # esh = ""
     # hostname = ""
     # sweep_config = ""
-    proc_num = 1
+    proc_num = 8
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    sweep_config = ""  # sweep.yaml"
+    sweep_config = ""
+    sweep_config = "sweep.yaml"
     # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
