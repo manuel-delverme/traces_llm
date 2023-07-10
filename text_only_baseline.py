@@ -3,6 +3,7 @@ import datetime
 import inspect
 import os.path
 import sys
+import tempfile
 
 import pytorch_lightning as pl
 import torch
@@ -10,6 +11,7 @@ import torch.utils.data
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.profilers import PyTorchProfiler
 from transformers import GPT2LMHeadModel, BatchEncoding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
@@ -20,6 +22,7 @@ import hyper
 from constants import VOCAB_SIZE
 from dataset import DataSample
 from presets import get_default_tokenizer
+from viz import visualize_one_sample
 
 
 def get_text_head(input_size, hidden_size, num_layers):
@@ -88,6 +91,18 @@ def get_image_tower(data_spec: dataset.DataSpec, hidden_size, num_layers, featur
     return torch.nn.Sequential(*layers)
 
 
+def timeit(f):
+    def timed(*args, **kw):
+        self = args[0]
+        ts = datetime.datetime.now()
+        result = f(*args, **kw)
+        te = datetime.datetime.now()
+        self.log(f"time/{f.__name__}", (te - ts).total_seconds())
+        return result
+
+    return timed
+
+
 class GPT2FineTuning(pl.LightningModule):
     def __init__(self, data_spec: dataset.DataSpec):
         learning_rate = hyper.learning_rate
@@ -115,6 +130,7 @@ class GPT2FineTuning(pl.LightningModule):
         num_towers = len(self.towers)
         self.head = get_text_head(input_size=features_size * num_towers, hidden_size=hidden_size, num_layers=num_layers)
 
+    @timeit
     def forward(self, batch: DataSample):
         features = []
         if batch.token_context is not None:
@@ -123,9 +139,8 @@ class GPT2FineTuning(pl.LightningModule):
                 attention_mask=batch.token_context.attention_mask,
             )
             last_hidden_state = outputs.hidden_states[-1]
-            features.append(last_hidden_state)
-            # hidden_state_for_last_token = last_hidden_state[:, -1, :]
-            # features.append(hidden_state_for_last_token)
+            hidden_state_for_last_token = last_hidden_state[:, -1, :]
+            features.append(hidden_state_for_last_token)
         if batch.motor_context is not None:
             features.append(self.towers["motor"](batch.motor_context))
         if batch.image_context is not None:
@@ -141,6 +156,7 @@ class GPT2FineTuning(pl.LightningModule):
             labels.view(-1),
             ignore_index=-100)
 
+    @timeit
     def training_step(self, batch: DataSample, batch_idx):
         batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         logits = self(batch)
@@ -148,8 +164,10 @@ class GPT2FineTuning(pl.LightningModule):
         self.log('train_loss', loss, batch_size=batch.labels.numel())
         return loss
 
+    @timeit
     def validation_step(self, batch: DataSample, batch_idx):
         batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
+        # visualize_one_sample(batch, self.tokenizer, num_samples=4)
         logits = self(batch)
         loss = self.compute_loss(logits, batch.labels)
 
@@ -180,9 +198,21 @@ class GPT2FineTuning(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
     def configure_callbacks(self):
+        try:
+            checkpoint_path = os.path.join(os.environ["HOME"], "scratch", os.environ["SLURM_JOB_ID"])
+        except KeyError:
+            checkpoint_path = tempfile.mkdtemp()
+
+        if not os.path.exists(checkpoint_path):
+            os.makedirs(checkpoint_path)
+
         return [
-            EarlyStopping(monitor="val_accuracy", mode="max", patience=100),
-            ModelCheckpoint(monitor="val_loss", mode="min", filename="best_model"),
+            EarlyStopping(
+                monitor=constants.optimized_metric, mode=constants.optimization_mode,
+                patience=hyper.early_stopping_patience, verbose=True),
+            ModelCheckpoint(
+                monitor=constants.optimized_metric, mode=constants.optimization_mode,
+                filename="best_model", dirpath=checkpoint_path)
         ]
 
 
@@ -212,7 +242,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     tokenizer = get_default_tokenizer()
 
     data_spec = dataset.DataSpec(
-        use_images=False,
+        use_images=True,
         use_motor_traces=False,
     )
     train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
@@ -233,7 +263,6 @@ def main(logger: experiment_buddy.WandbWrapper):
         # collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         collate_fn=FlatteningDataCollator(tokenizer),
     )
-
     trainer = Trainer(
         max_time=datetime.timedelta(hours=hyper.training_hours),
         logger=WandbLogger(experiment=logger.run),
@@ -241,6 +270,8 @@ def main(logger: experiment_buddy.WandbWrapper):
         log_every_n_steps=50,
     )
     model = GPT2FineTuning(data_spec)
+    model.tokenizer = tokenizer
+
     # TODO: merge the two scripts and models
     trainer.fit(
         model,
@@ -256,22 +287,22 @@ def buddy_setup():
         monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
     # esh = ""
     # hostname = ""
-    sweep_config = ""
+    # sweep_config = ""
     proc_num = 1
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    # sweep_config = "sweep.yaml"
+    sweep_config = ""  # sweep.yaml"
     # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
         hostname = ""
         sweep_config = ""
     esh = "\n".join(l.strip() for l in """
-    #SBATCH --cpus-per-task=4
-    #SBATCH --mem=8G
-    #SBATCH --time=1:00:00
+    #SBATCH --cpus-per-task=8
+    #SBATCH --mem=64G
+    #SBATCH --time=12:00:00
     #SBATCH --gres=gpu:1
         """.strip().split("\n")
                     ) + "\n"
