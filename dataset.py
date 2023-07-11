@@ -1,4 +1,5 @@
 import dataclasses
+import math
 import os
 import zipfile
 from typing import List, Optional
@@ -296,7 +297,27 @@ class MergeDatasets(Dataset):
 
             if token_motor_traces is not None:
                 left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
+                if constants.eager_rate < 1:
+                    assert token_images is None, "eager rate is not supported for images, as it would leak information"
+
+                # Calculate the number of characters to keep
+                num_chars_to_keep = len(token_motor_traces) * constants.eager_rate
+
+                # If the number of characters to keep is not an integer or is zero, adjust it accordingly
+                has_fraction, integer_part = math.modf(num_chars_to_keep)
+                should_adjust_last = bool(has_fraction) or integer_part == 0
+                num_chars_to_keep = int(num_chars_to_keep) if not should_adjust_last else int(num_chars_to_keep) + 1
+
+                # Slice the motor traces array from the end
+                token_motor_traces = token_motor_traces[-num_chars_to_keep:]
+
+                # If adjustment is needed, zero out corresponding steps in the last trace
+                if should_adjust_last:
+                    steps_to_zero = int(has_fraction * token_motor_traces.shape[1])
+                    token_motor_traces[-1, -steps_to_zero:] = 0
+
                 left_padded_motor_traces[-len(token_motor_traces):] = token_motor_traces
+
                 motor_contexts.append(left_padded_motor_traces)
 
             text_so_far.append(token_idx)
