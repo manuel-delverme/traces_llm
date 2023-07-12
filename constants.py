@@ -14,3 +14,4 @@ TEXT_DATASET_PATH = 'tiny_shakespeare.txt'
 
 optimized_metric = "val_loss"
 optimization_mode = "min"
+eager_rate = 0.25
