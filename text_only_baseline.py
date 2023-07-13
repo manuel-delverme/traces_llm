@@ -21,6 +21,7 @@ import hyper
 from constants import VOCAB_SIZE
 from dataset import DataSample
 from presets import get_default_tokenizer
+from viz import visualize_one_sample
 
 
 def get_text_head(input_size, hidden_size, num_layers):
@@ -38,15 +39,19 @@ def get_text_head(input_size, hidden_size, num_layers):
     )
 
 
-def get_motor_tower(data_spec, hidden_size, num_layers):
+def get_motor_tower(data_spec, hidden_size, num_layers, features_size):
+    point_dimensions = 2
     return torch.nn.Sequential(
-        torch.nn.Linear(data_spec.points_in_motor_sequence, hidden_size),
+        torch.nn.Flatten(),
+        torch.nn.Linear(
+            point_dimensions * data_spec.points_in_motor_sequence * constants.MAX_CHARS_PER_TOKEN,
+            hidden_size),
         torch.nn.ReLU(),
         *[torch.nn.Sequential(
             torch.nn.Linear(hidden_size, hidden_size),
             torch.nn.ReLU(),
         ) for _ in range(num_layers)],
-        torch.nn.Linear(hidden_size, 2),
+        torch.nn.Linear(hidden_size, features_size),
     )
 
 
@@ -120,24 +125,35 @@ class GPT2FineTuning(pl.LightningModule):
         features_size = self.towers["text"].config.hidden_size
 
         if data_spec.use_motor_traces:
-            self.towers["motor"] = get_motor_tower(data_spec, hidden_size, num_layers)
+            self.towers["motor"] = get_motor_tower(data_spec, hidden_size, num_layers, features_size)
             # self.gpt2.config.hidden_size
         if data_spec.use_images:
             self.towers["image"] = get_image_tower(data_spec, hidden_size, num_layers, features_size)
 
         num_towers = len(self.towers)
         self.head = get_text_head(input_size=features_size * num_towers, hidden_size=hidden_size, num_layers=num_layers)
+        self.feats_shape = None
+        self.use_text = False
 
     @timeit
     def forward(self, batch: DataSample):
         features = []
         if batch.token_context is not None:
-            outputs: CausalLMOutputWithCrossAttentions = self.towers["text"](
-                input_ids=batch.token_context.input_ids,
-                attention_mask=batch.token_context.attention_mask,
-            )
-            last_hidden_state = outputs.hidden_states[-1]
-            hidden_state_for_last_token = last_hidden_state[:, -1, :]
+            if self.use_text or self.feats_shape is None:
+                outputs: CausalLMOutputWithCrossAttentions = self.towers["text"](
+                    input_ids=batch.token_context.input_ids,
+                    attention_mask=batch.token_context.attention_mask,
+                )
+                last_hidden_state = outputs.hidden_states[-1]
+                hidden_state_for_last_token = last_hidden_state[:, -1, :]
+                self.feats_shape = hidden_state_for_last_token.shape[1:]
+
+            if self.feats_shape is not None and self.use_text:
+                raise ValueError("feat_shape should not be used when use_text is True")
+
+            if not self.use_text:
+                hidden_state_for_last_token = torch.zeros(
+                    (batch.token_context.input_ids.shape[0],) + self.feats_shape, device=self.device)
 
             features.append(hidden_state_for_last_token)
         if batch.motor_context is not None:
@@ -241,12 +257,12 @@ def main(logger: experiment_buddy.WandbWrapper):
     tokenizer = get_default_tokenizer()
 
     data_spec = dataset.DataSpec(
-        use_images=True,
-        use_motor_traces=False,
+        use_images=False,  # True,
+        use_motor_traces=True,
     )
     train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
 
-    num_cpus = os.cpu_count()
+    num_cpus = 0 if sys.gettrace() else os.cpu_count()
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=hyper.batch_size,
