@@ -1,8 +1,9 @@
 import dataclasses
 import math
 import os
+import random
 import zipfile
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -93,9 +94,11 @@ def maybe_download(file_name: str, path: str):
             zip_ref.extractall(path)
 
 
-def get_omniglot_dataset(data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
+def get_omniglot_dataset(data_spec: DataSpec, transforms: MultimodalTransform):
     cache_omniglot_dataset()
-    return OmniglotDataset(data_spec, transforms, alphabet_name)
+    train_dataset = OmniglotDataset(data_spec, transforms, repetitions=tuple(range(18)))
+    test_dataset = OmniglotDataset(data_spec, transforms, repetitions=tuple(range(18, 20)))
+    return train_dataset, test_dataset
 
 
 def resample_storkes(motor_traces):
@@ -146,13 +149,17 @@ def postprocess_omniglot_image(image):
 
 
 class OmniglotDataset(Dataset):
-    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name):
+    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, repetitions: Tuple[int, ...]):
+        assert max(repetitions) < 20
+
+        alphabet_name = "Latin"
         self.use_images = data_spec.use_images
         self.use_motor_traces = data_spec.use_motor_traces
         self.img_dir = os.path.join(constants.IMG_PATH, "images_background", alphabet_name)
         self.stroke_dir = os.path.join(constants.TRACES_PATH, "strokes_background", alphabet_name)
         self.dataset_size = self._calculate_dataset_size()
         self.transforms = transforms
+        self.repetitions = repetitions
 
     def _calculate_dataset_size(self) -> int:
         num_images = sum([len(subfolder) for subfolder in os.listdir(self.img_dir)])
@@ -181,7 +188,8 @@ class OmniglotDataset(Dataset):
     def __getitem__(self, token: str):
         # TODO: encode somehow the trace repetition, right now we always use the first one
         # token_idx, rep_idx = divmod(idx, self.traces_per_char)
-        rep_idx = 1
+        # rep_idx = 1
+        rep_idx = random.choice(self.repetitions)
 
         token_images = []
         token_traces = []
@@ -197,9 +205,12 @@ class OmniglotDataset(Dataset):
             assert 0 <= character_id < 26 or char == ' '
 
             if character_id == ord(' ') - ord('a'):
-                image_so_far, motor_traces = self.char_id_to_sample(ord('a') - ord('a'), rep_idx)
-                char_image = np.zeros_like(image_so_far)
-                motor_traces = np.zeros_like(motor_traces)
+                # Get a random image and trace
+                char_image_raw, motor_traces_raw = self.char_id_to_sample(character_id=0, rep_idx=1)
+                char_image, motor_traces = postprocess_image_and_traces(char_image_raw, motor_traces_raw)
+                # Set the image and trace to zero
+                char_image[:] = 0
+                motor_traces[:] = 0
             else:
                 char_image_raw, motor_traces_raw = self.char_id_to_sample(character_id, rep_idx)
                 char_image, motor_traces = postprocess_image_and_traces(char_image_raw, motor_traces_raw)
@@ -430,15 +441,15 @@ def get_multimodal_dataset(data_spec):
     text_test_set, text_train_set = get_text_dataset(tokenizer)
 
     # TODO: we are using the same data for train and test, we should split omniglot in two and sample independently
-    omniglot_dataset = get_omniglot_dataset(data_spec, transforms=multimodal_transforms, alphabet_name="Latin")
+    train_omniglot_dataset, test_omniglot_dataset = get_omniglot_dataset(data_spec, transforms=multimodal_transforms)
 
     train_set = MergeDatasets(
-        omniglot_dataset,
+        train_omniglot_dataset,
         text_train_set,
         tokenizer=tokenizer,
     )
     test_set = MergeDatasets(
-        omniglot_dataset,
+        test_omniglot_dataset,
         text_test_set,
         tokenizer=tokenizer,
     )
@@ -459,8 +470,8 @@ if __name__ == "__main__":
         use_images=True,
         use_motor_traces=True,
     )
-    train_dataset, valid_dataset = get_multimodal_dataset(data_spec)
-    print("Train dataset size:", len(train_dataset))
+    _train_dataset, valid_dataset = get_multimodal_dataset(data_spec)
+    print("Train dataset size:", len(_train_dataset))
     print("Valid dataset size:", len(valid_dataset))
-    print("Train dataset sample:", train_dataset[0])
+    print("Train dataset sample:", _train_dataset[0])
     print("Valid dataset sample:", valid_dataset[0])
