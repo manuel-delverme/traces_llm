@@ -1,59 +1,103 @@
-import pygame
+import random
+import time
+from collections import deque
+
 import numpy as np
 import torch
+from transformers import BatchEncoding
 
-from dataset import DataSpec
+import constants
+import dataset
+import hyper
+from dataset import DataSpec, DataSample
 from text_only_baseline import GPT2FineTuning
 
-# Initialize Pygame
-pygame.init()
 
-# Set up some constants
-WIDTH, HEIGHT = 600, 600
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
+class MockModel:
+    def __init__(self, data_spec: DataSpec):
+        self.data_spec = data_spec
+        pass
 
-# Load the trained model
-model = GPT2FineTuning(DataSpec(
-    use_images=False,
-    use_motor_traces=True,
-))
-# model.load_state_dict(torch.load("model.pt"))
-model.eval()
+    def eval(self):
+        pass
 
-window = pygame.display.set_mode((WIDTH, HEIGHT))
-surface = pygame.Surface((WIDTH, HEIGHT))
+    def __call__(self, mouse_positions):
+        # For a mock model, we'll just return a random number
+        return torch.rand(1)
 
-# Initialize a list to store the mouse positions
-mouse_positions = []
+
+class HandwritingRecognizer:
+    def __init__(self, model: GPT2FineTuning):
+        self.context_window = deque(maxlen=constants.MAX_CHARS_PER_TOKEN)
+        self.model = model
+        self.data_spec = model.data_spec
+
+    def preprocess_mouse_trace(self, mouse_positions):
+        # During evaluation we assume one stroke is one trace.
+        stroke = self.resample_stroke(mouse_positions)
+        stroke = torch.tensor(stroke, dtype=torch.float32).unsqueeze(0)
+
+        self.context_window.append(stroke)
+
+        context = torch.concat(list(self.context_window))
+        motor_trace = dataset.pad_motor_trace(context, eager_rate=1.)
+        return motor_trace
+
+    def resample_stroke(self, motor_context):
+        motor_context = dataset.resample_stroke(motor_context, self.data_spec.points_in_motor_sequence)
+        return motor_context
+
+    @torch.no_grad()
+    def predict(self, mouse_positions):
+        past_tokens = torch.randint(constants.VOCAB_SIZE, (1, hyper.TOKEN_CONTEXT_LEN))
+        token_context = BatchEncoding({
+            "input_ids": past_tokens,
+            "attention_mask": torch.ones((1, hyper.TOKEN_CONTEXT_LEN), dtype=torch.long)
+        })
+
+        motor_context = self.preprocess_mouse_trace(mouse_positions).unsqueeze(0)
+        postprocessed_sample = DataSample(
+            token_context=token_context,
+            motor_context=motor_context,
+        )
+        prediction = self.model(postprocessed_sample)
+        return prediction
+
+
+class MockGUI:
+    def __init__(self, data_spec: DataSpec):
+        self.mouse_positions = []
+        # model = MockModel(data_spec)
+        model = GPT2FineTuning(data_spec)
+        model.eval()
+        self.recognizer = HandwritingRecognizer(model)
+
+    def move_mouse(self, x, y, t):
+        self.mouse_positions.append((x, y, t))
+
+    def recognize_handwriting(self):
+        prediction = self.recognizer.predict(np.array(self.mouse_positions))
+        # Clear the mouse positions for the next recognition
+        self.mouse_positions = []
+        return prediction
+
 
 def main():
-    clock = pygame.time.Clock()
+    data_spec = dataset.DataSpec(
+        use_images=False,
+        use_motor_traces=True,
+    )
+    gui = MockGUI(data_spec=data_spec)
+    t = time.time()
 
-    pygame.event.clear()
-    run = True
-    while run:
-        clock.tick(60)
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                run = False
-            if event.type == pygame.MOUSEMOTION:
-                x, y = pygame.mouse.get_pos()
-                pygame.draw.circle(surface, WHITE, (x, y), 10)
-                mouse_positions.append((x, y))
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                # Convert the mouse positions to a PyTorch tensor and pass it through the model
-                input_tensor = torch.FloatTensor(mouse_positions)
-                prediction = model(input_tensor.unsqueeze(0))
+    # Simulate moving the mouse
+    for i in range(100):
+        t += random.random() / 100
+        gui.move_mouse(i, i, t)
 
-                # TODO: process the prediction and display it
-                # ...
+    prediction = gui.recognize_handwriting()
+    print(prediction)
 
-        window.fill(WHITE)
-        window.blit(surface, (0, 0))
-        pygame.display.flip()
-
-    pygame.quit()
 
 if __name__ == "__main__":
     main()

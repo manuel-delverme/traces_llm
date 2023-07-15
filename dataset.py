@@ -31,7 +31,7 @@ def cache_text_dataset():
         f.write(response.text)
 
 
-def resample_stroke(stroke, num_samples=100):
+def resample_stroke(stroke, num_samples):
     x, y, t = stroke.T
     new_t = np.linspace(t[0], t[-1], num_samples)
     return np.stack([np.interp(new_t, t, x), np.interp(new_t, t, y)], axis=1)
@@ -98,6 +98,53 @@ def get_omniglot_dataset(data_spec: DataSpec, transforms: MultimodalTransform, a
     return OmniglotDataset(data_spec, transforms, alphabet_name)
 
 
+def resample_storkes(motor_traces):
+    return [
+        resample_stroke(
+            stroke, num_samples=hyper.POINTS_IN_MOTOR_SEQUENCE // len(motor_traces)) for stroke in motor_traces
+    ]
+
+
+def _process_image_and_traces(image, resampled_motor_traces):
+    image_so_far = np.zeros_like(image)
+    all_traces = np.concatenate(resampled_motor_traces, axis=0)
+    min_x, min_y = np.min(all_traces, axis=0)
+    max_x, max_y = np.max(all_traces, axis=0)
+    assert image_so_far.shape[0] == image_so_far.shape[1]
+    for trace in resampled_motor_traces:
+        stroke = normalize_trace(trace, min_x, max_x, min_y, max_y)
+        points = np.round(stroke[:, :2] * image_so_far.shape[0]).astype(int)
+        points = np.clip(points, 0, image_so_far.shape[0] - 1)
+        image_so_far[points[:, 1], points[:, 0]] = 1
+    return image_so_far, all_traces
+
+
+def strokes_to_trace(all_traces):
+    motor_traces = np.zeros((hyper.POINTS_IN_MOTOR_SEQUENCE, 2))
+    motor_traces_ = np.array(all_traces, dtype=np.float32)
+    motor_traces[-len(motor_traces_):] = motor_traces_
+    return motor_traces
+
+
+def _adjust_image_orientation(image_so_far):
+    image_so_far = np.rot90(image_so_far, k=2)
+    image_so_far = np.fliplr(image_so_far)
+    return image_so_far
+
+
+def postprocess_image_and_traces(image, strokes_for_char):
+    resampled_motor_traces = resample_storkes(strokes_for_char)
+    image_so_far, all_traces = _process_image_and_traces(image, resampled_motor_traces)
+    motor_trace = strokes_to_trace(all_traces)
+    image_so_far = postprocess_omniglot_image(image_so_far)
+    return image_so_far, motor_trace
+
+
+def postprocess_omniglot_image(image):
+    image_so_far = _adjust_image_orientation(image)
+    return image_so_far.astype(np.uint8) * 255
+
+
 class OmniglotDataset(Dataset):
     def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name):
         self.use_images = data_spec.use_images
@@ -154,7 +201,8 @@ class OmniglotDataset(Dataset):
                 char_image = np.zeros_like(image_so_far)
                 motor_traces = np.zeros_like(motor_traces)
             else:
-                char_image, motor_traces = self.char_id_to_sample(character_id, rep_idx)
+                char_image_raw, motor_traces_raw = self.char_id_to_sample(character_id, rep_idx)
+                char_image, motor_traces = postprocess_image_and_traces(char_image_raw, motor_traces_raw)
 
             assert 0 <= character_id < 26 or char == ' '
 
@@ -181,12 +229,8 @@ class OmniglotDataset(Dataset):
         character_id_str = f"character{character_id + 1:02d}"
         fn_stk, fn_img = self._get_file_names(character_id_str, rep_idx)
         motor_traces = self._load_motor(fn_stk)
-        resampled_motor_traces = self._resample_traces(motor_traces)
         image = self._load_img(fn_img)
-        image_so_far, all_traces = self._process_image_and_traces(image, resampled_motor_traces)
-        motor_traces = self._merge_traces(all_traces)
-        image_so_far = self._adjust_image_orientation(image_so_far)
-        return image_so_far.astype(np.uint8) * 255, motor_traces
+        return image, motor_traces
 
     def _get_file_names(self, character_id, rep_idx):
         img_char_dir = os.path.join(self.img_dir, character_id)
@@ -196,36 +240,6 @@ class OmniglotDataset(Dataset):
         fn_stk = os.path.join(stroke_char_dir, f"{fn_base}_{rep_idx:02d}.txt")
         fn_img = os.path.join(img_char_dir, f"{fn_base}_{rep_idx:02d}.png")
         return fn_stk, fn_img
-
-    def _resample_traces(self, motor_traces):
-        return [
-            resample_stroke(
-                stroke, num_samples=hyper.POINTS_IN_MOTOR_SEQUENCE // len(motor_traces)) for stroke in motor_traces
-        ]
-
-    def _process_image_and_traces(self, image, resampled_motor_traces):
-        image_so_far = np.zeros_like(image)
-        all_traces = np.concatenate(resampled_motor_traces, axis=0)
-        min_x, min_y = np.min(all_traces, axis=0)
-        max_x, max_y = np.max(all_traces, axis=0)
-        assert image_so_far.shape[0] == image_so_far.shape[1]
-        for trace in resampled_motor_traces:
-            stroke = normalize_trace(trace, min_x, max_x, min_y, max_y)
-            points = np.round(stroke[:, :2] * image_so_far.shape[0]).astype(int)
-            points = np.clip(points, 0, image_so_far.shape[0] - 1)
-            image_so_far[points[:, 1], points[:, 0]] = 1
-        return image_so_far, all_traces
-
-    def _merge_traces(self, all_traces):
-        motor_traces = np.zeros((hyper.POINTS_IN_MOTOR_SEQUENCE, 2))
-        motor_traces_ = np.array(all_traces, dtype=np.float32)
-        motor_traces[-len(motor_traces_):] = motor_traces_
-        return motor_traces
-
-    def _adjust_image_orientation(self, image_so_far):
-        image_so_far = np.rot90(image_so_far, k=2)
-        image_so_far = np.fliplr(image_so_far)
-        return image_so_far
 
     def __len__(self):
         return self.dataset_size
@@ -246,6 +260,25 @@ def clean_token(token):
     if text == '':
         text = " "
     return text.lower()
+
+
+def pad_motor_trace(token_motor_traces: torch.Tensor, eager_rate=1.):
+    assert token_motor_traces.shape[1:] == (hyper.POINTS_IN_MOTOR_SEQUENCE, 2)
+    left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
+    # Calculate the number of characters to keep
+    num_chars_to_keep = len(token_motor_traces) * eager_rate
+    # If the number of characters to keep is not an integer or is zero, adjust it accordingly
+    has_fraction, integer_part = math.modf(num_chars_to_keep)
+    should_adjust_last = bool(has_fraction) or integer_part == 0
+    num_chars_to_keep = int(num_chars_to_keep) if not should_adjust_last else int(num_chars_to_keep) + 1
+    # Slice the motor traces array from the end
+    token_motor_traces = token_motor_traces[-num_chars_to_keep:]
+    # If adjustment is needed, zero out corresponding steps in the last trace
+    if should_adjust_last:
+        steps_to_zero = int(has_fraction * token_motor_traces.shape[1])
+        token_motor_traces[-1, -steps_to_zero:] = 0
+    left_padded_motor_traces[-len(token_motor_traces):] = token_motor_traces
+    return left_padded_motor_traces
 
 
 class MergeDatasets(Dataset):
@@ -296,27 +329,9 @@ class MergeDatasets(Dataset):
                 images.append(left_padded_images)
 
             if token_motor_traces is not None:
-                left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
                 if constants.eager_rate < 1:
                     assert token_images is None, "eager rate is not supported for images, as it would leak information"
-
-                # Calculate the number of characters to keep
-                num_chars_to_keep = len(token_motor_traces) * constants.eager_rate
-
-                # If the number of characters to keep is not an integer or is zero, adjust it accordingly
-                has_fraction, integer_part = math.modf(num_chars_to_keep)
-                should_adjust_last = bool(has_fraction) or integer_part == 0
-                num_chars_to_keep = int(num_chars_to_keep) if not should_adjust_last else int(num_chars_to_keep) + 1
-
-                # Slice the motor traces array from the end
-                token_motor_traces = token_motor_traces[-num_chars_to_keep:]
-
-                # If adjustment is needed, zero out corresponding steps in the last trace
-                if should_adjust_last:
-                    steps_to_zero = int(has_fraction * token_motor_traces.shape[1])
-                    token_motor_traces[-1, -steps_to_zero:] = 0
-
-                left_padded_motor_traces[-len(token_motor_traces):] = token_motor_traces
+                left_padded_motor_traces = pad_motor_trace(token_motor_traces, eager_rate=constants.eager_rate)
 
                 motor_contexts.append(left_padded_motor_traces)
 
@@ -433,7 +448,19 @@ def get_multimodal_dataset(data_spec):
 @dataclasses.dataclass
 class DataSample:
     token_context: BatchEncoding
-    labels: Optional[torch.Tensor]
+    labels: Optional[torch.Tensor] = None
     image_context: Optional[torch.Tensor] = None
     motor_context: Optional[torch.Tensor] = None
     # next_token_logits: Optional[torch.Tensor]
+
+
+if __name__ == "__main__":
+    data_spec = DataSpec(
+        use_images=True,
+        use_motor_traces=True,
+    )
+    train_dataset, valid_dataset = get_multimodal_dataset(data_spec)
+    print("Train dataset size:", len(train_dataset))
+    print("Valid dataset size:", len(valid_dataset))
+    print("Train dataset sample:", train_dataset[0])
+    print("Valid dataset sample:", valid_dataset[0])

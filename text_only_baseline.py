@@ -21,7 +21,6 @@ import hyper
 from constants import VOCAB_SIZE
 from dataset import DataSample
 from presets import get_default_tokenizer
-from viz import visualize_one_sample
 
 
 def get_text_head(input_size, hidden_size, num_layers):
@@ -133,10 +132,13 @@ class GPT2FineTuning(pl.LightningModule):
         num_towers = len(self.towers)
         self.head = get_text_head(input_size=features_size * num_towers, hidden_size=hidden_size, num_layers=num_layers)
         self.feats_shape = None
-        self.use_text = False
+        self.use_text = True
+        self.data_spec = data_spec
 
-    @timeit
+    # @timeit
     def forward(self, batch: DataSample):
+        assert batch.motor_context is None or batch.motor_context.shape[1:] == (
+        constants.MAX_CHARS_PER_TOKEN, hyper.POINTS_IN_MOTOR_SEQUENCE, 2)
         features = []
         if batch.token_context is not None:
             if self.use_text or self.feats_shape is None:
@@ -147,9 +149,6 @@ class GPT2FineTuning(pl.LightningModule):
                 last_hidden_state = outputs.hidden_states[-1]
                 hidden_state_for_last_token = last_hidden_state[:, -1, :]
                 self.feats_shape = hidden_state_for_last_token.shape[1:]
-
-            if self.feats_shape is not None and self.use_text:
-                raise ValueError("feat_shape should not be used when use_text is True")
 
             if not self.use_text:
                 hidden_state_for_last_token = torch.zeros(
@@ -171,7 +170,7 @@ class GPT2FineTuning(pl.LightningModule):
             labels.view(-1),
             ignore_index=-100)
 
-    @timeit
+    # @timeit
     def training_step(self, batch: DataSample, batch_idx):
         batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         logits = self(batch)
@@ -179,7 +178,7 @@ class GPT2FineTuning(pl.LightningModule):
         self.log('train_loss', loss, batch_size=batch.labels.numel())
         return loss
 
-    @timeit
+    # @timeit
     def validation_step(self, batch: DataSample, batch_idx):
         batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         # visualize_one_sample(batch, self.tokenizer, num_samples=4)
@@ -294,7 +293,7 @@ def main(logger: experiment_buddy.WandbWrapper):
         train_dataloaders=train_dataloader,
         val_dataloaders=valid_dataloader,
     )
-    return trainer
+    return model
 
 
 def buddy_setup():
@@ -361,7 +360,6 @@ def buddy_setup():
 
 
 if __name__ == '__main__':
-    hyper.training_hours = datetime.timedelta(seconds=1)
+    hyper.training_hours = datetime.timedelta(seconds=1).total_seconds() / (60 * 60)
     tb_ = buddy_setup()
-    trainer = main(tb_)
-    torch.jit.save(trainer.model, "model.pt")
+    model = main(tb_)
