@@ -65,10 +65,8 @@ class HandwritingRecognizer:
 
 
 class MockGUI:
-    def __init__(self, data_spec: DataSpec):
+    def __init__(self, model: GPT2FineTuning):
         self.mouse_positions = []
-        # model = MockModel(data_spec)
-        model = GPT2FineTuning(data_spec)
         model.eval()
         self.recognizer = HandwritingRecognizer(model)
 
@@ -81,21 +79,91 @@ class MockGUI:
         self.mouse_positions = []
         return prediction
 
+    def run_once(self):
+        t = time.time()
+        for i in range(100):
+            t += random.random() / 100
+            self.move_mouse(i, i, t)
+
+        prediction = self.recognize_handwriting()
+        return prediction
+
+    def run(self):
+        for i in range(10):
+            self.run_once()
+
+
+class PygameGUI:
+    def __init__(self, model):
+        import pygame
+        pygame.init()
+        self.model = model
+        self.model.eval()
+        self.WIDTH, self.HEIGHT = 600, 600
+        self.WHITE = (255, 255, 255)
+        self.BLACK = (0, 0, 0)
+        self.window = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+        self.surface = pygame.Surface((self.WIDTH, self.HEIGHT))
+        self.mouse_positions = []
+        self.recognizer = HandwritingRecognizer(self.model)
+
+    def move_mouse(self, x, y, t):
+        self.mouse_positions.append((x, y, t))
+
+    def recognize_handwriting(self):
+        prediction = self.recognizer.predict(np.array(self.mouse_positions))
+        self.mouse_positions = []
+        return prediction
+
+    def run_once(self):
+        import pygame
+        should_continue = True
+        pygame.event.clear()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                should_continue = False
+            if event.type == pygame.MOUSEMOTION:
+                x, y = pygame.mouse.get_pos()
+                t = pygame.time.get_ticks()  # Get the current time
+                pygame.draw.circle(self.surface, self.WHITE, (x, y), 10)
+                self.move_mouse(x, y, t)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                prediction = self.recognize_handwriting()
+                # TODO: process the prediction and display it
+                print(prediction)
+
+        self.window.fill(self.WHITE)
+        self.window.blit(self.surface, (0, 0))
+        pygame.display.flip()
+        return should_continue
+
+    def run(self):
+        import pygame
+        clock = pygame.time.Clock()
+        while self.run_once():
+            clock.tick(60)
+        pygame.quit()
+
+
+# Usage:
+# model = GPT2FineTuning(DataSpec(
+#    use_images=False,
+#    use_motor_traces=True,
+# ))
+# gui = PygameGUI(model)
+# gui.run()
+
 
 def main():
     data_spec = dataset.DataSpec(
         use_images=False,
         use_motor_traces=True,
     )
-    gui = MockGUI(data_spec=data_spec)
-    t = time.time()
+    model = GPT2FineTuning(data_spec)
+    # gui = MockGUI(model)
+    gui = PygameGUI(model)
+    prediction = gui.run_once()
 
-    # Simulate moving the mouse
-    for i in range(100):
-        t += random.random() / 100
-        gui.move_mouse(i, i, t)
-
-    prediction = gui.recognize_handwriting()
     print(prediction)
 
 
