@@ -360,6 +360,6 @@ def buddy_setup():
 
 
 if __name__ == '__main__':
-    hyper.training_hours = datetime.timedelta(seconds=1).total_seconds() / (60 * 60)
+    # hyper.training_hours = datetime.timedelta(seconds=1).total_seconds() / (60 * 60)
     tb_ = buddy_setup()
     model = main(tb_)
