@@ -4,6 +4,7 @@ import inspect
 import os.path
 import sys
 import tempfile
+import time
 
 import pytorch_lightning as pl
 import torch
@@ -138,7 +139,7 @@ class GPT2FineTuning(pl.LightningModule):
     # @timeit
     def forward(self, batch: DataSample):
         assert batch.motor_context is None or batch.motor_context.shape[1:] == (
-        constants.MAX_CHARS_PER_TOKEN, hyper.POINTS_IN_MOTOR_SEQUENCE, 2)
+            constants.MAX_CHARS_PER_TOKEN, hyper.POINTS_IN_MOTOR_SEQUENCE, 2)
         features = []
         if batch.token_context is not None:
             if self.use_text or self.feats_shape is None:
@@ -212,10 +213,12 @@ class GPT2FineTuning(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
     def configure_callbacks(self):
+        current_time = datetime.now().strftime('%b%d_%H-%M-%S')
         try:
-            checkpoint_path = os.path.join(os.environ["HOME"], "scratch", os.environ["SLURM_JOB_ID"])
+            checkpoint_path = os.path.join(os.environ["HOME"], "scratch", os.environ["SLURM_JOB_ID"], current_time)
         except KeyError:
             checkpoint_path = tempfile.mkdtemp()
+        print("Checkpoint path:", checkpoint_path)
 
         if not os.path.exists(checkpoint_path):
             os.makedirs(checkpoint_path)
@@ -261,7 +264,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     )
     train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
 
-    num_cpus = 0 if sys.gettrace() else os.cpu_count()
+    num_cpus = 0 if sys.gettrace() else min(os.cpu_count(), 8)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=hyper.batch_size,
@@ -302,15 +305,15 @@ def buddy_setup():
     wandb_kwargs = dict(
         monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
     # esh = ""
-    # hostname = ""
+    hostname = ""
     # sweep_config = ""
     proc_num = 8
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
-    hostname = "mila"
+    # hostname = "mila"
     sweep_config = ""
-    sweep_config = "sweep.yaml"
+    # sweep_config = "sweep.yaml"
     # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
@@ -360,6 +363,6 @@ def buddy_setup():
 
 
 if __name__ == '__main__':
-    hyper.training_hours = datetime.timedelta(seconds=1).total_seconds() / (60 * 60)
+    # hyper.training_hours = datetime.timedelta(seconds=1).total_seconds() / (60 * 60)
     tb_ = buddy_setup()
     model = main(tb_)

@@ -1,8 +1,10 @@
 import dataclasses
 import math
 import os
+import pickle
+import random
 import zipfile
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -93,9 +95,11 @@ def maybe_download(file_name: str, path: str):
             zip_ref.extractall(path)
 
 
-def get_omniglot_dataset(data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name: str = "Latin"):
+def get_omniglot_dataset(data_spec: DataSpec, transforms: MultimodalTransform):
     cache_omniglot_dataset()
-    return OmniglotDataset(data_spec, transforms, alphabet_name)
+    train_dataset = OmniglotDataset(data_spec, transforms, repetitions=tuple(range(1, 18)))
+    test_dataset = OmniglotDataset(data_spec, transforms, repetitions=tuple(range(18, 21)))
+    return train_dataset, test_dataset
 
 
 def resample_storkes(motor_traces):
@@ -146,13 +150,17 @@ def postprocess_omniglot_image(image):
 
 
 class OmniglotDataset(Dataset):
-    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, alphabet_name):
+    def __init__(self, data_spec: DataSpec, transforms: MultimodalTransform, repetitions: Tuple[int, ...]):
+        assert max(repetitions) <= 20
+
+        alphabet_name = "Latin"
         self.use_images = data_spec.use_images
         self.use_motor_traces = data_spec.use_motor_traces
         self.img_dir = os.path.join(constants.IMG_PATH, "images_background", alphabet_name)
         self.stroke_dir = os.path.join(constants.TRACES_PATH, "strokes_background", alphabet_name)
         self.dataset_size = self._calculate_dataset_size()
         self.transforms = transforms
+        self.repetitions = repetitions
 
     def _calculate_dataset_size(self) -> int:
         num_images = sum([len(subfolder) for subfolder in os.listdir(self.img_dir)])
@@ -181,7 +189,8 @@ class OmniglotDataset(Dataset):
     def __getitem__(self, token: str):
         # TODO: encode somehow the trace repetition, right now we always use the first one
         # token_idx, rep_idx = divmod(idx, self.traces_per_char)
-        rep_idx = 1
+        # rep_idx = 1
+        rep_idx = random.choice(self.repetitions)
 
         token_images = []
         token_traces = []
@@ -197,9 +206,12 @@ class OmniglotDataset(Dataset):
             assert 0 <= character_id < 26 or char == ' '
 
             if character_id == ord(' ') - ord('a'):
-                image_so_far, motor_traces = self.char_id_to_sample(ord('a') - ord('a'), rep_idx)
-                char_image = np.zeros_like(image_so_far)
-                motor_traces = np.zeros_like(motor_traces)
+                # Get a random image and trace
+                char_image_raw, motor_traces_raw = self.char_id_to_sample(character_id=0, rep_idx=1)
+                char_image, motor_traces = postprocess_image_and_traces(char_image_raw, motor_traces_raw)
+                # Set the image and trace to zero
+                char_image[:] = 0
+                motor_traces[:] = 0
             else:
                 char_image_raw, motor_traces_raw = self.char_id_to_sample(character_id, rep_idx)
                 char_image, motor_traces = postprocess_image_and_traces(char_image_raw, motor_traces_raw)
@@ -343,10 +355,15 @@ class MergeDatasets(Dataset):
 
             text_contexts.append(left_padded_char_context)
 
+        token_context = BatchEncoding({
+            "input_ids": torch.from_numpy(np.array(text_contexts)).to(dtype=torch.long),
+            "attention_mask": torch.ones((1, hyper.TOKEN_CONTEXT_LEN), dtype=torch.long)
+        })
+
         batch = DataSample(
+            token_context=token_context,
             image_context=torch.stack(images, dim=0) if len(images) > 0 else None,
             motor_context=torch.stack(motor_contexts, dim=0) if len(motor_contexts) > 0 else None,
-            token_context=torch.from_numpy(np.array(text_contexts)).to(dtype=torch.long),
             labels=torch.tensor(text_so_far, dtype=torch.long),
         )
         return dataclasses.asdict(batch)
@@ -417,32 +434,42 @@ def get_text_dataset(tokenizer):
 
 
 def get_multimodal_dataset(data_spec):
-    multimodal_transforms = MultimodalTransform(
-        image_transform=transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((data_spec.image_side, data_spec.image_side)),
-            transforms.ToTensor()
-        ]),
-        trace_transform=transforms.Lambda(lambda x: torch.Tensor(x))
-    )
+    import cloudpickle
+    try:
+        with open("dataset.pkl", "rb") as f:
+            return cloudpickle.load(f)
+    except FileNotFoundError:
+        multimodal_transforms = MultimodalTransform(
+            image_transform=transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize((data_spec.image_side, data_spec.image_side)),
+                transforms.ToTensor()
+            ]),
+            trace_transform=transforms.Lambda(lambda x: torch.Tensor(x))
+        )
     tokenizer = get_default_tokenizer()
 
     text_test_set, text_train_set = get_text_dataset(tokenizer)
 
     # TODO: we are using the same data for train and test, we should split omniglot in two and sample independently
-    omniglot_dataset = get_omniglot_dataset(data_spec, transforms=multimodal_transforms, alphabet_name="Latin")
+    train_omniglot_dataset, test_omniglot_dataset = get_omniglot_dataset(data_spec, transforms=multimodal_transforms)
 
     train_set = MergeDatasets(
-        omniglot_dataset,
+        train_omniglot_dataset,
         text_train_set,
         tokenizer=tokenizer,
     )
+
     test_set = MergeDatasets(
-        omniglot_dataset,
+        test_omniglot_dataset,
         text_test_set,
         tokenizer=tokenizer,
     )
-    return train_set, test_set
+
+    with open("dataset.pkl", "wb") as f:
+        cloudpickle.dump((train_set, test_set), f)
+
+    return get_multimodal_dataset(data_spec)
 
 
 @dataclasses.dataclass
@@ -450,17 +477,23 @@ class DataSample:
     token_context: BatchEncoding
     labels: Optional[torch.Tensor] = None
     image_context: Optional[torch.Tensor] = None
-    motor_context: Optional[torch.Tensor] = None
+    motor_context: Optional[torch.Tensor] = None  # batch_size x max_char_per_token x points_in_motor_seq x motor_dim
+
     # next_token_logits: Optional[torch.Tensor]
+    def __post_init__(self):
+        bs = self.token_context.data['input_ids'].shape[0]
+        assert self.labels is None or bs == self.labels.shape[0]
+        assert self.image_context is None or bs == self.image_context.shape[0]
+        assert self.motor_context is None or bs == self.motor_context.shape[0]
 
 
 if __name__ == "__main__":
     data_spec = DataSpec(
-        use_images=True,
+        use_images=False,
         use_motor_traces=True,
     )
-    train_dataset, valid_dataset = get_multimodal_dataset(data_spec)
-    print("Train dataset size:", len(train_dataset))
+    _train_dataset, valid_dataset = get_multimodal_dataset(data_spec)
+    print("Train dataset size:", len(_train_dataset))
     print("Valid dataset size:", len(valid_dataset))
-    print("Train dataset sample:", train_dataset[0])
+    print("Train dataset sample:", _train_dataset[0])
     print("Valid dataset sample:", valid_dataset[0])

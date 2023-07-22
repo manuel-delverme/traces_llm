@@ -198,3 +198,5 @@ data/
 /lightning_logs/
 /outputs/
 /multirun/
+/tiny_shakespeare.txt
+/dataset.pkl

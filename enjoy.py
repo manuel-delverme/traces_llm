@@ -1,40 +1,36 @@
-import random
-import time
 from collections import deque
 
-import numpy as np
 import torch
 from transformers import BatchEncoding
 
 import constants
 import dataset
 import hyper
+import presets
+import user_model
+import mocks
 from dataset import DataSpec, DataSample
 from text_only_baseline import GPT2FineTuning
 
 
-class MockModel:
-    def __init__(self, data_spec: DataSpec):
-        self.data_spec = data_spec
-        pass
-
-    def eval(self):
-        pass
-
-    def __call__(self, mouse_positions):
-        # For a mock model, we'll just return a random number
-        return torch.rand(1)
-
-
 class HandwritingRecognizer:
     def __init__(self, model: GPT2FineTuning):
+        self.tokenizer = presets.get_default_tokenizer()
+        pad_token = self.tokenizer.pad_token_id
+
         self.context_window = deque(maxlen=constants.MAX_CHARS_PER_TOKEN)
+        self.token_history = deque(maxlen=hyper.TOKEN_CONTEXT_LEN, iterable=[pad_token] * hyper.TOKEN_CONTEXT_LEN)
+
         self.model = model
+        self.model.eval()
+        # TODO: use the tokenizer from the model
         self.data_spec = model.data_spec
 
-    def preprocess_mouse_trace(self, mouse_positions):
-        # During evaluation we assume one stroke is one trace.
-        stroke = self.resample_stroke(mouse_positions)
+    def update_history_and_preprocess(self, char_trace):
+        assert char_trace.shape[0] == 1, "During evaluation we assume one stroke is one char."
+        char_trace = char_trace.squeeze(0)
+
+        stroke = self.resample_stroke(char_trace)
         stroke = torch.tensor(stroke, dtype=torch.float32).unsqueeze(0)
 
         self.context_window.append(stroke)
@@ -48,101 +44,26 @@ class HandwritingRecognizer:
         return motor_context
 
     @torch.no_grad()
-    def predict(self, mouse_positions):
-        past_tokens = torch.randint(constants.VOCAB_SIZE, (1, hyper.TOKEN_CONTEXT_LEN))
+    def update_history_and_predict(self, mouse_positions):
+        txt_context = torch.tensor(list(self.token_history)).unsqueeze(0)
         token_context = BatchEncoding({
-            "input_ids": past_tokens,
+            "input_ids": txt_context,
             "attention_mask": torch.ones((1, hyper.TOKEN_CONTEXT_LEN), dtype=torch.long)
         })
+        # TODO: where is the token_history updated?
 
-        motor_context = self.preprocess_mouse_trace(mouse_positions).unsqueeze(0)
+        motor_context = self.update_history_and_preprocess(mouse_positions).unsqueeze(0)
         postprocessed_sample = DataSample(
             token_context=token_context,
             motor_context=motor_context,
         )
         prediction = self.model(postprocessed_sample)
-        return prediction
+        token_idx = prediction.argmax(dim=-1).item()
+        token = self.tokenizer.decode(token_idx)
+        return token
 
-
-class MockGUI:
-    def __init__(self, model: GPT2FineTuning):
-        self.mouse_positions = []
-        model.eval()
-        self.recognizer = HandwritingRecognizer(model)
-
-    def move_mouse(self, x, y, t):
-        self.mouse_positions.append((x, y, t))
-
-    def recognize_handwriting(self):
-        prediction = self.recognizer.predict(np.array(self.mouse_positions))
-        # Clear the mouse positions for the next recognition
-        self.mouse_positions = []
-        return prediction
-
-    def run_once(self):
-        t = time.time()
-        for i in range(100):
-            t += random.random() / 100
-            self.move_mouse(i, i, t)
-
-        prediction = self.recognize_handwriting()
-        return prediction
-
-    def run(self):
-        for i in range(10):
-            self.run_once()
-
-
-class PygameGUI:
-    def __init__(self, model):
-        import pygame
-        pygame.init()
-        self.model = model
-        self.model.eval()
-        self.WIDTH, self.HEIGHT = 600, 600
-        self.WHITE = (255, 255, 255)
-        self.BLACK = (0, 0, 0)
-        self.window = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
-        self.surface = pygame.Surface((self.WIDTH, self.HEIGHT))
-        self.mouse_positions = []
-        self.recognizer = HandwritingRecognizer(self.model)
-
-    def move_mouse(self, x, y, t):
-        self.mouse_positions.append((x, y, t))
-
-    def recognize_handwriting(self):
-        prediction = self.recognizer.predict(np.array(self.mouse_positions))
-        self.mouse_positions = []
-        return prediction
-
-    def run_once(self):
-        import pygame
-        should_continue = True
-        pygame.event.clear()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                should_continue = False
-            if event.type == pygame.MOUSEMOTION:
-                x, y = pygame.mouse.get_pos()
-                t = pygame.time.get_ticks()  # Get the current time
-                pygame.draw.circle(self.surface, self.WHITE, (x, y), 10)
-                self.move_mouse(x, y, t)
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                prediction = self.recognize_handwriting()
-                # TODO: process the prediction and display it
-                print(prediction)
-
-        self.window.fill(self.WHITE)
-        self.window.blit(self.surface, (0, 0))
-        pygame.display.flip()
-        return should_continue
-
-    def run(self):
-        import pygame
-        clock = pygame.time.Clock()
-        while self.run_once():
-            clock.tick(60)
-        pygame.quit()
+    def next_token(self):
+        self.context_window.clear()
 
 
 # Usage:
@@ -155,14 +76,43 @@ class PygameGUI:
 
 
 def main():
+    # the gui is not good for tokens, validate results by sampling data from the dataset
     data_spec = dataset.DataSpec(
         use_images=False,
         use_motor_traces=True,
     )
-    model = GPT2FineTuning(data_spec)
-    # gui = MockGUI(model)
-    gui = PygameGUI(model)
+    # model = GPT2FineTuning(data_spec)
+    # load checkpoint "best_model-v24.ckpt"
+    model = GPT2FineTuning.load_from_checkpoint(
+        "./best_model-v24.ckpt",
+        data_spec=data_spec,
+        map_location=torch.device('cpu'),
+    )
+    model.eval()
+    model.freeze()
+
+    data_spec = DataSpec(
+        use_images=False,
+        use_motor_traces=True,
+    )
+    _train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
+    presets.tokenizer = valid_dataset.tokenizer
+
+    gui = mocks.MockGUI(
+        model,
+        user_interaction=user_model.OfflineUserInteraction(
+            valid_dataset,
+        )
+    )
+    # gui = PygameGUI(model, user_interaction=user_model.FakeUserInteraction(valid_dataset))
+
+    # for i in range(len(_train_dataset)):
+    #     token_images, token_motor_traces = _train_dataset[i]
+    #     _train_dataset.visualize_trace(token_motor_traces)
+    # prediction = gui.run_once()
+
     prediction = gui.run_once()
+    gui.run()
 
     print(prediction)
 
