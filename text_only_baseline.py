@@ -285,7 +285,7 @@ def buddy_setup():
     # esh = ""
     # hostname = ""
     # sweep_config = ""
-    proc_num = 8
+    proc_num = 4
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
