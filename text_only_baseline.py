@@ -285,13 +285,13 @@ def buddy_setup():
     # esh = ""
     # hostname = ""
     # sweep_config = ""
-    proc_num = 8
+    proc_num = 4
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
     hostname = "mila"
-    sweep_config = ""
-    # sweep_config = "sweep.yaml"
+    # sweep_config = ""
+    sweep_config = "sweep.yaml"
     # proc_num = -1
     # hostname = "aws://t4g.micro"
     if sys.gettrace() is not None and os.environ.get("BUDDY_DEBUG_DEPLOYMENT") is None:
