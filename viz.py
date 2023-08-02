@@ -104,6 +104,7 @@ def visualize_one_sample(input_data_sample: DataSample, tokenizer: GPT2Tokenizer
 
         if input_data_sample.motor_context is not None:
             ax_motor = fig.add_subplot(num_samples, num_columns, num_columns * sample_idx + 1 + column_num)
+            ax_motor.set_title(token_str + f" => {label_str}", fontsize=12)
             motor_context = input_data_sample.motor_context[sample_idx]
             visualize_motor_context(ax_motor, motor_context)
 

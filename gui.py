@@ -1,13 +1,12 @@
 import numpy as np
 import pygame
 
-from enjoy import HandwritingRecognizer
+from preprocess import HandwritingRecognizer
 
 
 class BaseGUI:
     def __init__(self):
         self.token_motor_traces = [[], ]
-
 
     def move_mouse(self, x, y, t):
         char_motor_traces = self.token_motor_traces[-1]
@@ -32,16 +31,18 @@ class PygameGUI(BaseGUI):
         super().__init__()
 
     def recognize_handwriting(self):
+        if not self.token_motor_traces[0]:
+            return None, None
+
         token_motor_traces = np.array(self.token_motor_traces)
-        prediction = self.recognizer.update_history_and_predict(token_motor_traces.copy())
+        prediction, p_token = self.recognizer.update_history_and_predict(token_motor_traces.copy())
         self.recognizer.next_token()
         self.token_motor_traces = [[], ]
-        return prediction
+        return prediction, p_token
 
     def run_once(self):
         should_continue = True
         for event in pygame.event.get():
-            print(event)
             if event.type == pygame.QUIT:
                 should_continue = False
             if event.type == pygame.MOUSEMOTION:
@@ -52,10 +53,13 @@ class PygameGUI(BaseGUI):
                     self.move_mouse(x, y, t)
                     pygame.draw.circle(self.surface, self.WHITE, (x, self.WIDTH - y), 10)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                prediction = self.recognize_handwriting()
+                prediction, p_token = self.recognize_handwriting()
                 # TODO: process the prediction and display it
                 self.user.reset(self.WIDTH, self.HEIGHT)
-                print(prediction)
+                # self.window.fill(self.WHITE)
+                # self.window.blit(self.surface, (0, 0))
+                # pygame.display.flip()
+                print(prediction, p_token)
 
         self.window.fill(self.WHITE)
         self.window.blit(self.surface, (0, 0))

@@ -4,13 +4,11 @@ import time
 import numpy as np
 import torch
 
-import constants
-import hyper
 from dataset import DataSpec
-from enjoy import HandwritingRecognizer
 from gui import BaseGUI
+from preprocess import HandwritingRecognizer
 from text_only_baseline import GPT2FineTuning
-from user_model import OfflineUserInteraction, UserInteraction
+from user_model import UserInteraction
 
 
 class MockModel:

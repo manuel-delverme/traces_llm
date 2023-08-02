@@ -21,6 +21,56 @@ import hyper
 from presets import get_default_tokenizer
 
 
+class FlatteningDataCollator:
+    """
+    A batch is made of batch_size samples,
+     each sample is a dictionary of elements
+
+     token_context: BatchEncoding({
+        "input_ids": torch.Tensor, # (batch_size, TOKEN_CONTEXT_LEN)
+        "attention_mask": torch.Tensor, # (batch_size, TOKEN_CONTEXT_LEN)
+      })
+     image_context: ??
+     motor_context: torch.Tensor, # (batch_size, MAX_CHARS_PER_TOKEN, POINTS_IN_MOTOR_SEQUENCE, 2)
+     labels: torch.Tensor, # (batch_size, )
+
+    This collator flattens the batch into a single dictionary of elements
+    """
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        # self.llm_collate_fn = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+        # self.collate_with_padding = transformers.DataCollatorWithPadding(tokenizer=tokenizer)
+
+    def __call__(self, batch):
+        elem = batch[0]
+
+        assert elem.keys() == {
+            "token_context",
+            "image_context",
+            "motor_context",
+            "labels",
+        }, "Batch elements do not match"
+        assert all(len(elem) == len(b) for b in batch), "Batch elements do not match"
+        assert all(elem.keys() == b.keys() for b in batch), "Batch elements do not match"
+
+        data = {}
+        for key in elem:
+            rows = [d[key] for d in batch]
+
+            if all(row is None for row in rows):
+                continue
+
+            if isinstance(rows[0], BatchEncoding):
+                batched_encoding = {
+                    k: torch.cat([d[k] for d in rows], dim=0) for k in rows[0].data.keys()
+                }
+                data[key] = BatchEncoding(batched_encoding)
+            else:
+                data[key] = torch.concat(rows, dim=0)
+        return DataSample(**data)
+
+
 def cache_text_dataset():
     if os.path.exists(constants.TEXT_DATASET_PATH):
         print("Dataset already cached")
@@ -39,7 +89,10 @@ def resample_stroke(stroke, num_samples):
     return np.stack([np.interp(new_t, t, x), np.interp(new_t, t, y)], axis=1)
 
 
-def normalize_trace(trace, min_x, max_x, min_y, max_y):
+def process_trace(all_traces):  # , min_x, max_x, min_y, max_y):
+    min_x, min_y = np.min(all_traces, axis=0)
+    max_x, max_y = np.max(all_traces, axis=0)
+
     x_norm = max_x - min_x
     if x_norm == 0:
         x_norm = 1
@@ -47,8 +100,8 @@ def normalize_trace(trace, min_x, max_x, min_y, max_y):
     if y_norm == 0:
         y_norm = 1
     return np.stack([
-        (trace[:, 0] - min_x) / x_norm,
-        (trace[:, 1] - min_y) / y_norm,
+        (all_traces[:, 0] - min_x) / x_norm,
+        (all_traces[:, 1] - min_y) / y_norm,
     ], axis=1)
 
 
@@ -109,21 +162,22 @@ def resample_storkes(motor_traces):
     ]
 
 
-def _process_image_and_traces(image, resampled_motor_traces):
-    image_so_far = np.zeros_like(image)
-    all_traces = np.concatenate(resampled_motor_traces, axis=0)
-    min_x, min_y = np.min(all_traces, axis=0)
-    max_x, max_y = np.max(all_traces, axis=0)
-    assert image_so_far.shape[0] == image_so_far.shape[1]
-    for trace in resampled_motor_traces:
-        stroke = normalize_trace(trace, min_x, max_x, min_y, max_y)
-        points = np.round(stroke[:, :2] * image_so_far.shape[0]).astype(int)
-        points = np.clip(points, 0, image_so_far.shape[0] - 1)
-        image_so_far[points[:, 1], points[:, 0]] = 1
+def _process_image_and_traces(image, all_traces):
+    stroke = process_trace(all_traces)
+    image_so_far = process_image(image, stroke)
     return image_so_far, all_traces
 
 
-def strokes_to_trace(all_traces):
+def process_image(image, stroke):
+    image_so_far = np.zeros_like(image)
+    assert image_so_far.shape[0] == image_so_far.shape[1]
+    points = np.round(stroke[:, :2] * image_so_far.shape[0]).astype(int)
+    points = np.clip(points, 0, image_so_far.shape[0] - 1)
+    image_so_far[points[:, 1], points[:, 0]] = 1
+    return image_so_far
+
+
+def pad_trace(all_traces):
     motor_traces = np.zeros((hyper.POINTS_IN_MOTOR_SEQUENCE, 2))
     motor_traces_ = np.array(all_traces, dtype=np.float32)
     motor_traces[-len(motor_traces_):] = motor_traces_
@@ -137,11 +191,18 @@ def _adjust_image_orientation(image_so_far):
 
 
 def postprocess_image_and_traces(image, strokes_for_char):
-    resampled_motor_traces = resample_storkes(strokes_for_char)
-    image_so_far, all_traces = _process_image_and_traces(image, resampled_motor_traces)
-    motor_trace = strokes_to_trace(all_traces)
+    motor_trace = process_strokes(strokes_for_char)
+
+    image_so_far = process_image(image, motor_trace)
     image_so_far = postprocess_omniglot_image(image_so_far)
     return image_so_far, motor_trace
+
+
+def process_strokes(strokes_for_char):
+    resampled_motor_traces = resample_storkes(strokes_for_char)
+    all_traces = np.concatenate(resampled_motor_traces, axis=0)
+    trace = process_trace(all_traces)
+    return trace
 
 
 def postprocess_omniglot_image(image):
@@ -205,27 +266,30 @@ class OmniglotDataset(Dataset):
             character_id = ord(char) - ord('a')
             assert 0 <= character_id < 26 or char == ' '
 
+            should_zero_out = False
             if character_id == ord(' ') - ord('a'):
-                # Get a random image and trace
-                char_image_raw, motor_traces_raw = self.char_id_to_sample(character_id=0, rep_idx=1)
-                char_image, motor_traces = postprocess_image_and_traces(char_image_raw, motor_traces_raw)
-                # Set the image and trace to zero
+                character_id = 0
+                rep_idx = 1
+                should_zero_out = True
+
+            raw_char_image, raw_motor_strokes = self.char_id_to_sample(character_id, rep_idx)
+            char_image, motor_traces = postprocess_image_and_traces(raw_char_image, raw_motor_strokes)
+
+            if should_zero_out:
                 char_image[:] = 0
                 motor_traces[:] = 0
-            else:
-                char_image_raw, motor_traces_raw = self.char_id_to_sample(character_id, rep_idx)
-                char_image, motor_traces = postprocess_image_and_traces(char_image_raw, motor_traces_raw)
 
-            assert 0 <= character_id < 26 or char == ' '
+            # TODO: continue cleaning up preprocessing, rerun experiments with cleaned up, reuse same preprocessing for enjoy
+            motor_trace = pad_trace(motor_traces)
 
             single_channel_image = torch.from_numpy(char_image.copy()).unsqueeze(0)
 
-            single_channel_image, motor_traces = self.transforms(
-                images=single_channel_image, motor_traces=motor_traces
+            single_channel_image, motor_trace = self.transforms(
+                images=single_channel_image, motor_traces=motor_trace
             )
 
             token_images.append(single_channel_image)
-            token_traces.append(motor_traces)
+            token_traces.append(motor_trace)
 
         token_images = torch.stack(token_images, dim=0)
         token_traces = torch.stack(token_traces, dim=0)
@@ -240,9 +304,9 @@ class OmniglotDataset(Dataset):
     def char_id_to_sample(self, character_id, rep_idx):
         character_id_str = f"character{character_id + 1:02d}"
         fn_stk, fn_img = self._get_file_names(character_id_str, rep_idx)
-        motor_traces = self._load_motor(fn_stk)
+        strokes = self._load_motor(fn_stk)
         image = self._load_img(fn_img)
-        return image, motor_traces
+        return image, strokes
 
     def _get_file_names(self, character_id, rep_idx):
         img_char_dir = os.path.join(self.img_dir, character_id)
@@ -355,9 +419,12 @@ class MergeDatasets(Dataset):
 
             text_contexts.append(left_padded_char_context)
 
+        input_ids = torch.from_numpy(np.array(text_contexts)).to(dtype=torch.long)
+        attention_mask = (input_ids != self.tokenizer.pad_token_id).to(torch.long)
+
         token_context = BatchEncoding({
-            "input_ids": torch.from_numpy(np.array(text_contexts)).to(dtype=torch.long),
-            "attention_mask": torch.ones((1, hyper.TOKEN_CONTEXT_LEN), dtype=torch.long)
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
         })
 
         batch = DataSample(
@@ -433,20 +500,23 @@ def get_text_dataset(tokenizer):
     return train_dataset, val_dataset
 
 
-def get_multimodal_dataset(data_spec):
+def get_multimodal_dataset(data_spec, cache_only=False):
     import cloudpickle
     try:
         with open("dataset.pkl", "rb") as f:
             return cloudpickle.load(f)
-    except FileNotFoundError:
-        multimodal_transforms = MultimodalTransform(
-            image_transform=transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((data_spec.image_side, data_spec.image_side)),
-                transforms.ToTensor()
-            ]),
-            trace_transform=transforms.Lambda(lambda x: torch.Tensor(x))
-        )
+    except FileNotFoundError as e:
+        if cache_only:
+            raise e
+
+    multimodal_transforms = MultimodalTransform(
+        image_transform=transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((data_spec.image_side, data_spec.image_side)),
+            transforms.ToTensor()
+        ]),
+        trace_transform=transforms.Lambda(lambda x: torch.tensor(x))  # normalize_one_trace)
+    )
     tokenizer = get_default_tokenizer()
 
     text_test_set, text_train_set = get_text_dataset(tokenizer)
@@ -469,7 +539,7 @@ def get_multimodal_dataset(data_spec):
     with open("dataset.pkl", "wb") as f:
         cloudpickle.dump((train_set, test_set), f)
 
-    return get_multimodal_dataset(data_spec)
+    return get_multimodal_dataset(data_spec, cache_only=True)
 
 
 @dataclasses.dataclass
@@ -489,11 +559,16 @@ class DataSample:
 
 if __name__ == "__main__":
     data_spec = DataSpec(
-        use_images=False,
+        use_images=False,  # True,
         use_motor_traces=True,
     )
-    _train_dataset, valid_dataset = get_multimodal_dataset(data_spec)
-    print("Train dataset size:", len(_train_dataset))
-    print("Valid dataset size:", len(valid_dataset))
-    print("Train dataset sample:", _train_dataset[0])
-    print("Valid dataset sample:", valid_dataset[0])
+    train_dataset, valid_dataset = get_multimodal_dataset(data_spec)
+    tokenizer = get_default_tokenizer()
+
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=hyper.batch_size,
+        num_workers=0,
+        shuffle=True,
+        collate_fn=FlatteningDataCollator(tokenizer),
+    )

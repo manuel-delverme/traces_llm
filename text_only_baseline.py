@@ -4,7 +4,6 @@ import inspect
 import os.path
 import sys
 import tempfile
-import time
 
 import pytorch_lightning as pl
 import torch
@@ -22,6 +21,7 @@ import hyper
 from constants import VOCAB_SIZE
 from dataset import DataSample
 from presets import get_default_tokenizer
+from viz import visualize_one_sample  # noqa
 
 
 def get_text_head(input_size, hidden_size, num_layers):
@@ -213,7 +213,8 @@ class GPT2FineTuning(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
     def configure_callbacks(self):
-        current_time = datetime.now().strftime('%b%d_%H-%M-%S')
+        # raise "TODO: figure out why motor traces are not normalized for SL"
+        current_time = datetime.datetime.now().strftime('%b%d_%H-%M-%S')
         try:
             checkpoint_path = os.path.join(os.environ["HOME"], "scratch", os.environ["SLURM_JOB_ID"], current_time)
         except KeyError:
@@ -233,28 +234,6 @@ class GPT2FineTuning(pl.LightningModule):
         ]
 
 
-class FlatteningDataCollator:
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        # self.llm_collate_fn = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-    def __call__(self, batch):
-        elem = batch[0]
-
-        data = {}
-        for key in elem:
-            rows = [d[key] for d in batch]
-
-            if all(row is None for row in rows):
-                continue
-
-            data[key] = torch.concat(rows, dim=0)
-            if key == "token_context":
-                attention_mask = (data[key] != self.tokenizer.pad_token_id).to(torch.long)
-                data[key] = BatchEncoding(data={"input_ids": data[key], "attention_mask": attention_mask})
-        return DataSample(**data)
-
-
 def main(logger: experiment_buddy.WandbWrapper):
     tokenizer = get_default_tokenizer()
 
@@ -271,15 +250,14 @@ def main(logger: experiment_buddy.WandbWrapper):
         num_workers=num_cpus,
         shuffle=True,
         # collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
-        collate_fn=FlatteningDataCollator(tokenizer),
+        collate_fn=dataset.FlatteningDataCollator(tokenizer),
     )
-    len(train_dataloader)
     valid_dataloader = torch.utils.data.DataLoader(
         valid_dataset,
         batch_size=hyper.batch_size,
         num_workers=num_cpus,
         # collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
-        collate_fn=FlatteningDataCollator(tokenizer),
+        collate_fn=dataset.FlatteningDataCollator(tokenizer),
     )
     trainer = Trainer(
         max_time=datetime.timedelta(hours=hyper.training_hours),
@@ -305,13 +283,13 @@ def buddy_setup():
     wandb_kwargs = dict(
         monitor_gym=False, entity="delvermm", settings=wandb.Settings(start_method="thread"), save_code=True)
     # esh = ""
-    hostname = ""
+    # hostname = ""
     # sweep_config = ""
     proc_num = 8
     # hostname = "cc-beluga"
     # hostname = "cc-cedar"
     # hostname = "mila"
-    # hostname = "mila"
+    hostname = "mila"
     sweep_config = ""
     # sweep_config = "sweep.yaml"
     # proc_num = -1
@@ -366,3 +344,5 @@ if __name__ == '__main__':
     # hyper.training_hours = datetime.timedelta(seconds=1).total_seconds() / (60 * 60)
     tb_ = buddy_setup()
     model = main(tb_)
+    # for a in train_dataloader:
+    #     print(a)

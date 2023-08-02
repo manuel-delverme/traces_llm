@@ -72,6 +72,7 @@ class OfflineUserInteraction(UserInteraction):
 
     def get_new_trace(self):
         index = random.randint(0, len(self.dataset) - 1)
+        print(index)
         sample = DataSample(**self.dataset[index])
         motor_traces, labels = sample.motor_context, sample.labels
         return motor_traces[0], labels[0]
