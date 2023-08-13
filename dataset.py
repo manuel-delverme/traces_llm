@@ -353,7 +353,7 @@ def clean_token(token):
 
 
 def pad_motor_trace(token_motor_traces: torch.Tensor, eager_rate=1.):
-    assert token_motor_traces.shape[1:] == (hyper.POINTS_IN_MOTOR_SEQUENCE, 2)
+    assert token_motor_traces.shape[1:] == (hyper.POINTS_IN_MOTOR_SEQUENCE, 2)  # (num_chars, num_points, 2)
     left_padded_motor_traces = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_motor_traces.shape[1:])
     # Calculate the number of characters to keep
     num_chars_to_keep = len(token_motor_traces) * eager_rate

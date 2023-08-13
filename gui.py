@@ -6,14 +6,14 @@ from preprocess import HandwritingRecognizer
 
 class BaseGUI:
     def __init__(self):
-        self.token_motor_traces = [[], ]
+        self.char_strokes = []
 
     def track_move_mouse(self, x, y, t):
-        char_motor_traces = self.token_motor_traces[-1]
-        char_motor_traces.append((x, y, t))
+        stroke_motor_traces = self.char_strokes[-1]
+        stroke_motor_traces.append((x, y, t))
 
-    def new_char(self):
-        self.token_motor_traces.append([])
+    def new_stroke(self):
+        self.char_strokes.append([])
 
 
 class PygameGUI(BaseGUI):
@@ -31,47 +31,49 @@ class PygameGUI(BaseGUI):
         super().__init__()
 
     def recognize_handwriting(self):
-        if not self.token_motor_traces[0]:
+        if not self.char_strokes[0]:
             return None, None
 
-        token_motor_traces = np.array(self.token_motor_traces)
+        token_motor_traces = np.array(self.char_strokes)
+        # "num_chars x num_strokes=1 x num_points x (x, y, t)"
+        # Right now with scripted user we have only one stroke per character
+        # Eventually it will be a mess to figure out which stroke belongs to which character
+        # but that's not today's problem
+        token_motor_traces = np.expand_dims(token_motor_traces, axis=1)
 
         traces = token_motor_traces.copy()
 
         prediction, p_token = self.recognizer.update_history_and_predict(traces)
         self.recognizer.next_token()
-        self.token_motor_traces = [[], ]
+        # For the moment we reset the recognizer after each character
+        # This loses the use of having a history, but it's a start
+        self.recognizer.reset()
+        self.char_strokes = []
         return prediction, p_token
 
-    def run_once(self):
-        while True:
-            # event = self.user.get_event()
-            event = pygame.event.wait()
-            if event.type == pygame.MOUSEMOTION:
-                print(event)
+    def process_event_queue(self):
+        should_continue = True
+        events = [self.user.get_event(), ]
 
+        for event in events:
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                self.new_stroke()
             if event.type == pygame.QUIT:
                 should_continue = False
                 break
             elif event.type == pygame.MOUSEMOTION:
                 # Replace the event with the one from the user object
-                # event = self.user.get_event()
-                # while event.type != pygame.MOUSEMOTION:
-                #     event = self.user.get_event()
-
                 x, y = event.pos
                 t = pygame.time.get_ticks()
                 self.track_move_mouse(x, y, t)
                 pygame.draw.circle(self.surface, self.WHITE, (x, self.WIDTH - y,), 10)
-                # pygame.draw.circle(self.surface, self.WHITE, (x, y,), 10)
 
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 prediction, p_token = self.recognize_handwriting()
                 # TODO: process the prediction and display it
                 self.user.reset(self.WIDTH, self.HEIGHT)
                 # Clear the screen
-                # self.surface.fill(self.BLACK)
-
+                self.surface.fill(self.BLACK)
                 print(prediction, p_token)
 
         self.window.fill(self.WHITE)
@@ -83,6 +85,6 @@ class PygameGUI(BaseGUI):
         import pygame
         clock = pygame.time.Clock()
         self.user.reset(self.WIDTH, self.HEIGHT)
-        while self.run_once():
+        while self.process_event_queue():
             clock.tick(60)
         pygame.quit()

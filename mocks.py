@@ -33,7 +33,7 @@ class MockGUI(BaseGUI):
         self.height = 100
 
     def recognize_handwriting(self):
-        token_motor_trace = np.array(self.token_motor_traces)
+        token_motor_trace = np.array(self.char_strokes)
         prediction = self.recognizer.update_history_and_predict(token_motor_trace)
         # Clear the mouse positions for the next recognition
         self.mouse_positions = []

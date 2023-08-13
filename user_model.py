@@ -87,6 +87,6 @@ class OfflineUserInteraction(UserInteraction):
     def get_event(self):
         if not self.token_events:
             return None
-        time.sleep(1 / 30)
+        time.sleep(1 / 120)
         event = self.token_events.pop(0)
         return event
