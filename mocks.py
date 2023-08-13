@@ -43,7 +43,7 @@ class MockGUI(BaseGUI):
         t = time.time()
         for i in range(100):
             t += random.random() / 100
-            self.move_mouse(i, i, t)
+            self.track_move_mouse(i, i, t)
             if i % 10 == 0:
                 self.user_model.reset(self.width, self.height)
 

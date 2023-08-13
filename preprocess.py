@@ -1,7 +1,6 @@
 from collections import deque
 
 import torch
-from matplotlib import pyplot as plt
 from transformers import BatchEncoding
 
 import constants
@@ -10,7 +9,6 @@ import hyper
 import presets
 from dataset import DataSample
 from text_only_baseline import GPT2FineTuning
-from viz import visualize_one_sample, visualize_motor_context
 
 
 class HandwritingRecognizer:
@@ -26,40 +24,24 @@ class HandwritingRecognizer:
         # TODO: use the tokenizer from the model
         self.data_spec = model.data_spec
 
-    def update_history_and_preprocess(self, char_trace):
-        assert char_trace.shape[0] == 1, "During evaluation we assume one stroke is one char."
-        char_trace = char_trace.squeeze(0)
+    def update_motor_history_and_preprocess(self, batched_char_trace):
+        assert batched_char_trace.shape[0] == 1, "During evaluation we assume one trace is a character"
+        char_trace = batched_char_trace.squeeze(0)
 
-        left_most_point = char_trace.min(axis=0)
-
-        # remove padding and no-op timestamps
-        char_trace -= left_most_point
-
-        # ax_motor = plt.gca()
-        # ax_motor.set_xlim(-20, 100)
-        # visualize_motor_context(ax_motor, char_trace[None, :, :2])
-        # plt.show()
-
-        stroke = self.resample_stroke(char_trace)
-
-        # ax_motor = plt.gca()
-        # ax_motor.set_xlim(-20, 100)
-        # visualize_motor_context(ax_motor, stroke[None, :, :2])
-        # plt.show()
-
+        stroke = dataset.process_strokes([char_trace, ])
         stroke = torch.tensor(stroke, dtype=torch.float32).unsqueeze(0)
 
         self.context_window.append(stroke)
 
         context = torch.concat(list(self.context_window))
         motor_trace = dataset.pad_motor_trace(context, eager_rate=1.)
-        return motor_trace
+        return motor_trace.unsqueeze(0)
 
     def resample_stroke(self, motor_context):
         return dataset.resample_stroke(motor_context, self.data_spec.points_in_motor_sequence)
 
     @torch.no_grad()
-    def update_history_and_predict(self, mouse_positions):
+    def update_history_and_predict(self, mouse_traces):
         txt_context = torch.tensor(list(self.token_history)).unsqueeze(0)
         token_context = BatchEncoding({
             "input_ids": txt_context,
@@ -67,7 +49,7 @@ class HandwritingRecognizer:
         })
         # TODO: where is the token_history updated?
 
-        motor_context = self.update_history_and_preprocess(mouse_positions).unsqueeze(0)
+        motor_context = self.update_motor_history_and_preprocess(mouse_traces)
         postprocessed_sample = DataSample(
             token_context=token_context,
             motor_context=motor_context,

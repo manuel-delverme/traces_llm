@@ -8,7 +8,7 @@ class BaseGUI:
     def __init__(self):
         self.token_motor_traces = [[], ]
 
-    def move_mouse(self, x, y, t):
+    def track_move_mouse(self, x, y, t):
         char_motor_traces = self.token_motor_traces[-1]
         char_motor_traces.append((x, y, t))
 
@@ -35,30 +35,43 @@ class PygameGUI(BaseGUI):
             return None, None
 
         token_motor_traces = np.array(self.token_motor_traces)
-        prediction, p_token = self.recognizer.update_history_and_predict(token_motor_traces.copy())
+
+        traces = token_motor_traces.copy()
+
+        prediction, p_token = self.recognizer.update_history_and_predict(traces)
         self.recognizer.next_token()
         self.token_motor_traces = [[], ]
         return prediction, p_token
 
     def run_once(self):
-        should_continue = True
-        for event in pygame.event.get():
+        while True:
+            # event = self.user.get_event()
+            event = pygame.event.wait()
+            if event.type == pygame.MOUSEMOTION:
+                print(event)
+
             if event.type == pygame.QUIT:
                 should_continue = False
-            if event.type == pygame.MOUSEMOTION:
-                pos = self.user.get_pos()
-                if pos:
-                    x, y = pos
-                    t = pygame.time.get_ticks()
-                    self.move_mouse(x, y, t)
-                    pygame.draw.circle(self.surface, self.WHITE, (x, self.WIDTH - y), 10)
+                break
+            elif event.type == pygame.MOUSEMOTION:
+                # Replace the event with the one from the user object
+                # event = self.user.get_event()
+                # while event.type != pygame.MOUSEMOTION:
+                #     event = self.user.get_event()
+
+                x, y = event.pos
+                t = pygame.time.get_ticks()
+                self.track_move_mouse(x, y, t)
+                pygame.draw.circle(self.surface, self.WHITE, (x, self.WIDTH - y,), 10)
+                # pygame.draw.circle(self.surface, self.WHITE, (x, y,), 10)
+
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 prediction, p_token = self.recognize_handwriting()
                 # TODO: process the prediction and display it
                 self.user.reset(self.WIDTH, self.HEIGHT)
-                # self.window.fill(self.WHITE)
-                # self.window.blit(self.surface, (0, 0))
-                # pygame.display.flip()
+                # Clear the screen
+                # self.surface.fill(self.BLACK)
+
                 print(prediction, p_token)
 
         self.window.fill(self.WHITE)

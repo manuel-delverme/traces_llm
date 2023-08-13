@@ -84,25 +84,39 @@ def cache_text_dataset():
 
 
 def resample_stroke(stroke, num_samples):
+    assert len(stroke.shape) == 2, "Stroke must be 2D, not batched"
     x, y, t = stroke.T
     new_t = np.linspace(t[0], t[-1], num_samples)
     return np.stack([np.interp(new_t, t, x), np.interp(new_t, t, y)], axis=1)
 
 
-def process_trace(all_traces):  # , min_x, max_x, min_y, max_y):
+def _process_trace(all_traces):
     min_x, min_y = np.min(all_traces, axis=0)
-    max_x, max_y = np.max(all_traces, axis=0)
 
-    x_norm = max_x - min_x
-    if x_norm == 0:
-        x_norm = 1
-    y_norm = max_y - min_y
-    if y_norm == 0:
-        y_norm = 1
+    x_norm = 50
+
+    # y_norm = max_y - min_y
+    # y_norm = max(y_norm, 50)
+    y_norm = 50
+
     return np.stack([
         (all_traces[:, 0] - min_x) / x_norm,
         (all_traces[:, 1] - min_y) / y_norm,
     ], axis=1)
+
+
+def revert_preprocess_trace(all_traces):
+    x_norm = 50
+    y_norm = 50
+
+    # return np.stack([(all_traces[:, 0] * x_norm), (all_traces[:, 1] * y_norm), ], axis=1)
+    all_traces[:, 0] *= x_norm
+    all_traces[:, 1] *= y_norm
+    return all_traces
+
+
+example_trace = np.array([[0, 0], [1, 1]])
+assert np.allclose(revert_preprocess_trace(_process_trace(example_trace)), example_trace)
 
 
 @dataclasses.dataclass
@@ -163,7 +177,7 @@ def resample_storkes(motor_traces):
 
 
 def _process_image_and_traces(image, all_traces):
-    stroke = process_trace(all_traces)
+    stroke = _process_trace(all_traces)
     image_so_far = process_image(image, stroke)
     return image_so_far, all_traces
 
@@ -201,7 +215,7 @@ def postprocess_image_and_traces(image, strokes_for_char):
 def process_strokes(strokes_for_char):
     resampled_motor_traces = resample_storkes(strokes_for_char)
     all_traces = np.concatenate(resampled_motor_traces, axis=0)
-    trace = process_trace(all_traces)
+    trace = _process_trace(all_traces)
     return trace
 
 

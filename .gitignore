@@ -203,3 +203,4 @@ data/
 *.zip
 *.rar
 *.pt
+/best_model.ckpt

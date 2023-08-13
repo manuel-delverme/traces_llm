@@ -26,7 +26,7 @@ def main():
     # model = GPT2FineTuning(data_spec)
     # load checkpoint "best_model-v24.ckpt"
     model = GPT2FineTuning.load_from_checkpoint(
-        "./best_model-v24.ckpt",
+        "./best_model.ckpt",
         data_spec=data_spec,
         map_location=torch.device('cpu'),
     )
@@ -37,7 +37,7 @@ def main():
         use_images=False,
         use_motor_traces=True,
     )
-    _train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec)
+    _train_dataset, valid_dataset = dataset.get_multimodal_dataset(data_spec, model.towers)
     presets.tokenizer = valid_dataset.tokenizer
 
     # gui = mocks.MockGUI(
@@ -54,10 +54,10 @@ def main():
     #     _train_dataset.visualize_trace(token_motor_traces)
     # prediction = gui.run_once()
 
-    prediction = gui.run_once()
+    # prediction = gui.run_once()
     gui.run()
 
-    print(prediction)
+    # print(prediction)
 
 
 if __name__ == "__main__":
