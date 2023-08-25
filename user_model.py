@@ -27,9 +27,12 @@ class OfflineUserInteraction(UserInteraction):
         self.next_token = None
         self.current_step = None
         self.token_events = None
+        self.postprocessed_token_trace = None
 
     def reset(self, width, height):
         padded_token_traces, next_token = self.get_new_trace()
+        self.postprocessed_token_trace = padded_token_traces
+
         next_token = self.dataset.tokenizer.decode(next_token)
         char_traces = [trace for trace in padded_token_traces if not (trace == 0).all()]
         if not char_traces:

@@ -55,10 +55,15 @@ def main():
     # prediction = gui.run_once()
 
     # prediction = gui.run_once()
-    gui.run()
+    # gui.run()
+    gui.validate_pipeline()
 
     # print(prediction)
 
 
 if __name__ == "__main__":
+    # TODO: enjoy still uses one character at a time, there is no point in using a LLM if the characters are not considered
+    # next steps:
+    # 1) implement token level decoding
+    # 2) use token history via LLM
     main()
