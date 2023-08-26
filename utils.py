@@ -132,3 +132,36 @@ def space_motor_to_img(pt):
 def space_img_to_motor(pt):
     pt[:, 1] = -pt[:, 1]
     return
+
+
+def calculate_wer(reference_tokens, hypothesis_tokens):
+    """
+    Calculate Word Error Rate (WER) between reference and hypothesis.
+
+    Parameters:
+    - reference (str): Ground truth sentence.
+    - hypothesis (str): Predicted sentence.
+
+    Returns:
+    - wer (float): Word Error Rate.
+    """
+
+    # Initialize a table for dynamic programming
+    dp = np.zeros((len(reference_tokens) + 1, len(hypothesis_tokens) + 1))
+
+    dp[:, 0] = np.arange(len(reference_tokens) + 1)
+    dp[0, :] = np.arange(len(hypothesis_tokens) + 1)
+
+    for i in range(1, len(reference_tokens) + 1):
+        for j in range(1, len(hypothesis_tokens) + 1):
+            if reference_tokens[i - 1] == hypothesis_tokens[j - 1]:
+                dp[i, j] = dp[i - 1, j - 1]
+            else:
+                dp[i, j] = min(
+                    dp[i - 1, j],  # Deletion
+                    dp[i, j - 1],  # Insertion
+                    dp[i - 1, j - 1]  # Substitution
+                ) + 1
+
+    wer = dp[len(reference_tokens)][len(hypothesis_tokens)] / len(reference_tokens)
+    return wer
