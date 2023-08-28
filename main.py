@@ -1,14 +1,11 @@
 import torch
 import tqdm
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from transformers import AdamW
 
-import dataset
-import hyper
+from dataset import DataSample
 from models import MultimodalLLM
 from utils import flatten_batch_and_sequence_dims
-from dataset import DataSample
 
 LEARNING_RATE = 1e-5
 
@@ -76,7 +73,6 @@ def main():
 
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
     trainer = Trainer(device, model, optimizer)
-
 
     fine_tune(trainer, train_set, test_set)
 

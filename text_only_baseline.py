@@ -1,10 +1,10 @@
+import collections
 import dataclasses
 import datetime
 import inspect
 import os.path
 import sys
 import tempfile
-import collections
 
 import pytorch_lightning as pl
 import torch
@@ -12,6 +12,7 @@ import torch.utils.data
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
+from torcheval.metrics import WordErrorRate
 from transformers import GPT2LMHeadModel, BatchEncoding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
@@ -22,7 +23,6 @@ import hyper
 from constants import VOCAB_SIZE
 from dataset import DataSample
 from presets import get_default_tokenizer
-from utils import calculate_wer
 from viz import visualize_one_sample  # noqa
 
 
@@ -182,9 +182,8 @@ class GPT2FineTuning(pl.LightningModule):
         return loss
 
     def autoregressive_prediction(self, batch: DataSample):
+        wer_metric = WordErrorRate()
         sentence_features, sentence_targets = self.batch_to_sentences(batch)
-
-        wers = []
 
         for sentence_feature, sentence_target in zip(sentence_features, sentence_targets):
             hypothesis = []
@@ -220,42 +219,49 @@ class GPT2FineTuning(pl.LightningModule):
 
                 hypothesis.append(predicted)
 
-            wer = calculate_wer(sentence_target, hypothesis)
-            wers.append(wer)
-            # print("TARGET:", [self.tokenizer.decode([t]) for t in sentence_target])
-            # print("HYPOTHESIS:", [self.tokenizer.decode([h]) for h in hypothesis])
-            # print("WER:", wer)
+            # Avid decoding the tokens, it's slow
+            wer_metric.update([str(h.item()) for h in hypothesis], [str(t) for t in sentence_target])
+        return wer_metric.compute()
 
-        return wers
+    def _append_sentence_features(self, features, token_ids, motor_context):
+        features.append(
+            DataSample(
+                token_context=BatchEncoding({
+                    "input_ids": token_ids.unsqueeze(0),
+                    "attention_mask": token_ids.ne(self.tokenizer.pad_token_id).unsqueeze(0),
+                }),
+                motor_context=motor_context.unsqueeze(0),
+            )
+        )
+
+    def _append_sentence_targets(self, targets, token_ids, label):
+        non_masked_tokens = token_ids[token_ids != self.tokenizer.pad_token_id]
+        targets.append(non_masked_tokens.tolist() + [int(label)])
 
     def batch_to_sentences(self, batch):
-        sentence_features = [[], ]
-        sentence_targets = []
+        sentence_features, sentence_targets = [[]], []
         last_attention_map_sum = batch.token_context.data["attention_mask"][0].sum()
+
         for i in range(batch.labels.shape[0]):
             token_context = batch.token_context["input_ids"][i]
-            if i > 0 and batch.token_context.data["attention_mask"][i].sum() < last_attention_map_sum:
-                non_masked_tokens = last_token_context[last_token_context != self.tokenizer.pad_token_id]
-                target_sentence = non_masked_tokens.tolist() + [int(batch.labels[i])]
-                sentence_targets.append(target_sentence)
+            attention_map_sum = batch.token_context.data["attention_mask"][i].sum()
+
+            if i > 0 and attention_map_sum < last_attention_map_sum:
+                self._append_sentence_targets(sentence_targets, last_token_context, batch.labels[i])
                 sentence_features.append([])
 
-            sentence_features[-1].append(
-                DataSample(
-                    token_context=BatchEncoding({
-                        "input_ids": batch.token_context["input_ids"][i].unsqueeze(0),
-                        "attention_mask": batch.token_context["attention_mask"][i].unsqueeze(0),
-                    }),
-                    motor_context=batch.motor_context[i].unsqueeze(0),
-                ))
+            self._append_sentence_features(sentence_features[-1], token_context, batch.motor_context[i])
 
-            last_attention_map_sum = batch.token_context.data["attention_mask"][i].sum()
+            last_attention_map_sum = attention_map_sum
             last_token_context = token_context.clone()
-        sentence_targets.append(last_token_context[last_token_context != self.tokenizer.pad_token_id].tolist())
+
+        self._append_sentence_targets(sentence_targets, last_token_context, batch.labels[-1])
         return sentence_features, sentence_targets
 
     # @timeit
     def validation_step(self, batch: DataSample, batch_idx):
+        # super().validation_step(batch, batch_idx)
+
         batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         # visualize_one_sample(batch, self.tokenizer, num_samples=4)
         logits = self(batch)
@@ -278,11 +284,10 @@ class GPT2FineTuning(pl.LightningModule):
         self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True, batch_size=batch_size)
         self.log('best_val_loss', self.best_validation_loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
-        wers = self.autoregressive_prediction(batch)
-        average_wer = sum(wers) / len(wers)
+        average_wer = self.autoregressive_prediction(batch)
 
         # Store and/or log the computed WER
-        self.log('val_wer', average_wer)
+        self.log('val_wer', average_wer, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
