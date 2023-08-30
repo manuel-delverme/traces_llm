@@ -1,15 +1,13 @@
 from collections import deque
 
-import numpy as np
 import torch
 from transformers import BatchEncoding
 
-import constants
 import dataset
 import hyper
 import presets
 from dataset import DataSample
-from text_only_baseline import GPT2FineTuning
+from models.trunk import GPT2FineTuning
 
 
 class HandwritingRecognizer:

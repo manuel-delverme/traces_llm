@@ -7,7 +7,7 @@ import torch
 from dataset import DataSpec
 from gui import BaseGUI
 from preprocess import HandwritingRecognizer
-from text_only_baseline import GPT2FineTuning
+from models import GPT2FineTuning
 from user_model import UserInteraction
 
 

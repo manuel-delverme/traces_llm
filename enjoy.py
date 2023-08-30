@@ -5,7 +5,7 @@ import presets
 import user_model
 from dataset import DataSpec
 from gui import PygameGUI
-from text_only_baseline import GPT2FineTuning
+from models import GPT2FineTuning
 
 
 # Usage:
