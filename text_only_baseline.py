@@ -348,7 +348,7 @@ def main(logger: experiment_buddy.WandbWrapper):
     model = GPT2FineTuning(data_spec)
     model.tokenizer = tokenizer
 
-    sl_checkpoint_path = "best_model.ckpt"
+    sl_checkpoint_path = None  # "best_model.ckpt"
 
     # TODO: merge the two scripts and models
     trainer.fit(
