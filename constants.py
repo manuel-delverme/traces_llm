@@ -11,6 +11,7 @@ IMG_PATH = 'data/images'
 TRACES_PATH = 'data/traces'
 DATA_URL = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
 TEXT_DATASET_PATH = 'tiny_shakespeare.txt'
+MULTIMODAL_DATASET_CACHE_PATH = "dataset.pkl"
 
 optimized_metric = "val_loss"
 optimization_mode = "min"

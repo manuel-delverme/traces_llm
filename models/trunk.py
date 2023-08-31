@@ -114,15 +114,6 @@ class MultimodalLLM(nn.Module):
         return logits
 
 
-class Permute(torch.nn.Module):
-    def __init__(self, *dims):
-        super().__init__()
-        self.dims = dims
-
-    def forward(self, x):
-        return x.permute(*self.dims)
-
-
 class GPT2FineTuning(pl.LightningModule):
     def __init__(self, data_spec: dataset.DataSpec):
         learning_rate = hyper.learning_rate
@@ -132,6 +123,7 @@ class GPT2FineTuning(pl.LightningModule):
         super().__init__()
         self.learning_rate = learning_rate
         self.save_hyperparameters()
+        self.skip_first_wer = True
 
         self.best_validation_loss = float('inf')
 
@@ -299,10 +291,10 @@ class GPT2FineTuning(pl.LightningModule):
         self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True, batch_size=batch_size)
         self.log('best_val_loss', self.best_validation_loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
-        average_wer = self.autoregressive_prediction(batch)
-
-        # Store and/or log the computed WER
-        self.log('val_wer', average_wer, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        if self.skip_first_wer:
+            average_wer = self.autoregressive_prediction(batch)
+            self.log('val_wer', average_wer, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        self.skip_first_wer = False
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)

@@ -1,10 +1,10 @@
 import dataclasses
+import functools
 import math
 import os
-import pickle
 import random
 import zipfile
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,6 +19,27 @@ from transformers import PreTrainedTokenizer, BatchEncoding
 import constants
 import hyper
 from presets import get_default_tokenizer
+
+
+@dataclasses.dataclass
+class DataSample:
+    token_context: BatchEncoding
+    labels: Optional[torch.Tensor] = None
+    image_context: Optional[torch.Tensor] = None
+    motor_context: Optional[torch.Tensor] = None  # batch_size x max_char_per_token x points_in_motor_seq x motor_dim
+
+    # next_token_logits: Optional[torch.Tensor]
+    def __post_init__(self):
+        bs = self.token_context.data['input_ids'].shape[0]
+        assert self.labels is None or bs == self.labels.shape[0]
+        assert self.image_context is None or bs == self.image_context.shape[0]
+        assert self.motor_context is None or bs == self.motor_context.shape[0]
+
+
+@dataclasses.dataclass
+class ProcessingDataSample:
+    image_context: Union[np.ndarray, torch.Tensor]
+    motor_context: Union[np.ndarray, torch.Tensor]
 
 
 class FlatteningDataCollator:
@@ -93,10 +114,9 @@ def resample_stroke(stroke, num_samples):
 def _process_trace(all_traces):
     min_x, min_y = np.min(all_traces, axis=0)
 
-    x_norm = 50
-
     # y_norm = max_y - min_y
     # y_norm = max(y_norm, 50)
+    x_norm = 50
     y_norm = 50
 
     return np.stack([
@@ -133,8 +153,13 @@ class MultimodalTransform:
         self.image_transform = image_transform
         self.trace_transform = trace_transform
 
-    def __call__(self, images, motor_traces):
-        return self.image_transform(images), self.trace_transform(motor_traces)
+    def __call__(self, sample: ProcessingDataSample) -> ProcessingDataSample:
+        transformed_trace = self.trace_transform(sample.motor_context)
+        transformed_image = self.image_transform((sample.image_context, transformed_trace))
+        return ProcessingDataSample(
+            image_context=transformed_image,
+            motor_context=transformed_trace,
+        )
 
 
 # def cache_omniglot_dataset(alphabet_name: str):
@@ -204,11 +229,15 @@ def _adjust_image_orientation(image_so_far):
     return image_so_far
 
 
-def postprocess_image_and_traces(image, strokes_for_char):
+def postprocess_image_and_traces(image, strokes_for_char, use_image):
     motor_trace = process_strokes(strokes_for_char)
 
-    image_so_far = process_image(image, motor_trace)
-    image_so_far = postprocess_omniglot_image(image_so_far)
+    if use_image:
+        image_so_far = process_image(image, motor_trace)
+        image_so_far = postprocess_omniglot_image(image_so_far)
+    else:
+        image_so_far = np.zeros_like(image)
+
     return image_so_far, motor_trace
 
 
@@ -277,6 +306,7 @@ class OmniglotDataset(Dataset):
             token = " "  # TODO: we are aliasing the space character to end of text
 
         for char in token:
+            # TODO keep reviewing the dataset, the intent is to add a doctor writing preprocess
             character_id = ord(char) - ord('a')
             assert 0 <= character_id < 26 or char == ' '
 
@@ -286,41 +316,38 @@ class OmniglotDataset(Dataset):
                 rep_idx = 1
                 should_zero_out = True
 
-            raw_char_image, raw_motor_strokes = self.char_id_to_sample(character_id, rep_idx)
-            char_image, motor_traces = postprocess_image_and_traces(raw_char_image, raw_motor_strokes)
+            raw_sample: ProcessingDataSample = self.char_id_to_sample(character_id, rep_idx)
+            data_sample = self.transforms(raw_sample)
 
             if should_zero_out:
-                char_image[:] = 0
-                motor_traces[:] = 0
+                data_sample.image_context[:] = 0
+                data_sample.motor_context[:] = 0
 
-            # TODO: continue cleaning up preprocessing, rerun experiments with cleaned up, reuse same preprocessing for enjoy
-            motor_trace = pad_trace(motor_traces)
+            token_traces.append(data_sample.motor_context)
+            token_images.append(data_sample.image_context)
 
-            single_channel_image = torch.from_numpy(char_image.copy()).unsqueeze(0)
+        token_traces = torch.concat(token_traces, dim=0)
+        token_images = torch.concat(token_images, dim=0)
 
-            single_channel_image, motor_trace = self.transforms(
-                images=single_channel_image, motor_traces=motor_trace
-            )
-
-            token_images.append(single_channel_image)
-            token_traces.append(motor_trace)
-
-        token_images = torch.stack(token_images, dim=0)
-        token_traces = torch.stack(token_traces, dim=0)
-
-        if not self.use_images:
-            token_images = None
         if not self.use_motor_traces:
             token_traces = None
+        if not self.use_images:
+            token_images = None
 
-        return token_images, token_traces
+        return ProcessingDataSample(
+            motor_context=token_traces,
+            image_context=token_images,
+        )
 
-    def char_id_to_sample(self, character_id, rep_idx):
+    def char_id_to_sample(self, character_id, rep_idx) -> ProcessingDataSample:
         character_id_str = f"character{character_id + 1:02d}"
         fn_stk, fn_img = self._get_file_names(character_id_str, rep_idx)
         strokes = self._load_motor(fn_stk)
         image = self._load_img(fn_img)
-        return image, strokes
+        return ProcessingDataSample(
+            image_context=image,
+            motor_context=strokes,
+        )
 
     def _get_file_names(self, character_id, rep_idx):
         img_char_dir = os.path.join(self.img_dir, character_id)
@@ -402,7 +429,7 @@ class MergeDatasets(Dataset):
             token = self.tokenizer.decode(token_idx, clean_up_tokenization_spaces=True).lower()
             token = clean_token(token)
 
-            token_images, token_motor_traces = self.omniglot_dataset[token]
+            token_sample: ProcessingDataSample = self.omniglot_dataset[token]
 
             char_context = np.array(text_so_far)
 
@@ -412,16 +439,17 @@ class MergeDatasets(Dataset):
                 char_context, (hyper.TOKEN_CONTEXT_LEN - len(char_context), 0), 'constant',
                 constant_values=self.tokenizer.pad_token_id)
 
-            if token_images is not None:
-                assert len(token_images) <= constants.MAX_CHARS_PER_TOKEN, "too many images for a single token"
-                left_padded_images = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *token_images.shape[1:])
-                left_padded_images[-len(token_images):] = token_images
+            if token_sample.image_context is not None:
+                img = token_sample.image_context
+                assert len(img) <= constants.MAX_CHARS_PER_TOKEN, "too many images for a single token"
+                left_padded_images = torch.zeros(constants.MAX_CHARS_PER_TOKEN, *img[1:])
+                left_padded_images[-len(img):] = img
                 images.append(left_padded_images)
 
-            if token_motor_traces is not None:
+            if token_sample.motor_context is not None:
                 if constants.eager_rate < 1:
-                    assert token_images is None, "eager rate is not supported for images, as it would leak information"
-                left_padded_motor_traces = pad_motor_trace(token_motor_traces, eager_rate=constants.eager_rate)
+                    assert token_sample.image_context is None, "eager rate is not supported for images, as it would leak information"
+                left_padded_motor_traces = pad_motor_trace(token_sample.motor_context, eager_rate=constants.eager_rate)
 
                 motor_contexts.append(left_padded_motor_traces)
 
@@ -515,22 +543,39 @@ def get_text_dataset(tokenizer):
 
 
 def get_multimodal_dataset(data_spec, cache_only=False):
-    import cloudpickle
-    try:
-        with open("dataset.pkl", "rb") as f:
-            return cloudpickle.load(f)
-    except FileNotFoundError as e:
-        if cache_only:
-            raise e
+    # try:
+    #     with open(constants.MULTIMODAL_DATASET_CACHE_PATH, "rb") as f:
+    #         return cloudpickle.load(f)
+    # except FileNotFoundError as e:
+    #     if cache_only:
+    #         raise e
+
+    def preprocess_trace(strokes_for_char):
+        motor_traces = process_strokes(strokes_for_char)
+        motor_trace = pad_trace(motor_traces)
+        return motor_trace
+
+    def preprocess_image(image_and_motor_trace, use_image):
+        image, motor_trace = image_and_motor_trace
+        image = image.astype(np.float32)
+        if use_image:
+            image_so_far = process_image(image, motor_trace)
+            image_so_far = postprocess_omniglot_image(image_so_far)
+        else:
+            image_so_far = np.zeros_like(image, dtype=np.float32)
+        return image_so_far
 
     multimodal_transforms = MultimodalTransform(
         image_transform=transforms.Compose([
+            functools.partial(preprocess_image, use_image=data_spec.use_images),
             transforms.ToPILImage(),
             transforms.Resize((data_spec.image_side, data_spec.image_side)),
             transforms.ToTensor()
         ]),
-        trace_transform=transforms.Lambda(lambda x: torch.tensor(x))  # normalize_one_trace)
-    )
+        trace_transform=transforms.Compose([
+            preprocess_trace,
+            transforms.ToTensor(),
+        ]))
     tokenizer = get_default_tokenizer()
 
     text_test_set, text_train_set = get_text_dataset(tokenizer)
@@ -550,25 +595,11 @@ def get_multimodal_dataset(data_spec, cache_only=False):
         tokenizer=tokenizer,
     )
 
-    with open("dataset.pkl", "wb") as f:
-        cloudpickle.dump((train_set, test_set), f)
+    # with open(constants.MULTIMODAL_DATASET_CACHE_PATH, "wb") as f:
+    #     cloudpickle.dump((train_set, test_set), f)
 
-    return get_multimodal_dataset(data_spec, cache_only=True)
-
-
-@dataclasses.dataclass
-class DataSample:
-    token_context: BatchEncoding
-    labels: Optional[torch.Tensor] = None
-    image_context: Optional[torch.Tensor] = None
-    motor_context: Optional[torch.Tensor] = None  # batch_size x max_char_per_token x points_in_motor_seq x motor_dim
-
-    # next_token_logits: Optional[torch.Tensor]
-    def __post_init__(self):
-        bs = self.token_context.data['input_ids'].shape[0]
-        assert self.labels is None or bs == self.labels.shape[0]
-        assert self.image_context is None or bs == self.image_context.shape[0]
-        assert self.motor_context is None or bs == self.motor_context.shape[0]
+    # return get_multimodal_dataset(data_spec, cache_only=True)
+    return train_set, test_set
 
 
 if __name__ == "__main__":

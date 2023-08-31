@@ -3,7 +3,15 @@ import torch
 import constants
 import dataset
 from constants import VOCAB_SIZE
-from models.trunk import Permute
+
+
+class Permute(torch.nn.Module):
+    def __init__(self, *dims):
+        super().__init__()
+        self.dims = dims
+
+    def forward(self, x):
+        return x.permute(*self.dims)
 
 
 def get_text_head(input_size, hidden_size, num_layers):
