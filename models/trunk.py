@@ -21,6 +21,7 @@ from constants import GPT2_VOCAB_SIZE, VOCAB_SIZE, MAX_CHARS_PER_TOKEN
 from dataset import DataSample
 from hyper import POINTS_IN_MOTOR_SEQUENCE
 from models.heads import get_motor_tower, get_text_head, get_image_tower
+from viz import visualize_one_sample
 
 
 class TraceEmbeddingModel(nn.Module):
@@ -198,8 +199,9 @@ class GPT2FineTuning(pl.LightningModule):
                 token_context=BatchEncoding({
                     "input_ids": torch.full(
                         sentence_feature[0].token_context.data["input_ids"].shape,
-                        self.tokenizer.pad_token_id),
-                    "attention_mask": torch.zeros(sentence_feature[0].token_context.data["attention_mask"].shape),
+                        self.tokenizer.pad_token_id, device=self.device),
+                    "attention_mask": torch.zeros(
+                        sentence_feature[0].token_context.data["attention_mask"].shape, device=self.device),
                 }),
                 motor_context=None,
             )
@@ -267,8 +269,6 @@ class GPT2FineTuning(pl.LightningModule):
 
     # @timeit
     def validation_step(self, batch: DataSample, batch_idx):
-        # super().validation_step(batch, batch_idx)
-
         batch = DataSample(**{k: v.to(self.device) for k, v in dataclasses.asdict(batch).items() if v is not None})
         # visualize_one_sample(batch, self.tokenizer, num_samples=4)
         logits = self(batch)
