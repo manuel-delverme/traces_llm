@@ -2,6 +2,8 @@ TOKEN_CONTEXT_LEN = 18
 POINTS_IN_MOTOR_SEQUENCE = 64
 IMAGE_SIDE = 28
 
+noise_scale = 0.05
+
 early_stopping_patience = 32
 
 training_hours = 1

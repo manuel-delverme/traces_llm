@@ -565,6 +565,11 @@ def get_multimodal_dataset(data_spec, cache_only=False):
             image_so_far = np.zeros_like(image, dtype=np.float32)
         return image_so_far
 
+    def add_trace_noise(motor_trace):
+        noise = np.random.normal(0, hyper.noise_scale, motor_trace.shape)
+        motor_trace += noise
+        return motor_trace
+
     multimodal_transforms = MultimodalTransform(
         image_transform=transforms.Compose([
             functools.partial(preprocess_image, use_image=data_spec.use_images),
@@ -575,6 +580,7 @@ def get_multimodal_dataset(data_spec, cache_only=False):
         trace_transform=transforms.Compose([
             preprocess_trace,
             transforms.ToTensor(),
+            add_trace_noise,
         ]))
     tokenizer = get_default_tokenizer()
 
