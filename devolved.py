@@ -1,10 +1,12 @@
 import datetime
 import os.path
 import sys
+from typing import Any
 
 import torch
 import torch.utils.data
 from pytorch_lightning import Trainer
+from pytorch_lightning.accelerators import AcceleratorRegistry
 from pytorch_lightning.loggers import WandbLogger
 
 import dataset
