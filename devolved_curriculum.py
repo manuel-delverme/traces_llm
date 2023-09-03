@@ -195,8 +195,8 @@ def plot_trajectories(dataloader, ts):
             # lines += np.random.normal(0, 0.001, lines.shape)
 
             plt.plot(*lines.T, **kwargs, alpha=0.1)
-    plt.xlim(-3, 3)
-    plt.ylim(-3, 3)
+    # plt.xlim(-2, 2)
+    # plt.ylim(-2, 2)
     plt.legend()
     plt.title(f"step {ts}")
     plt.show()
