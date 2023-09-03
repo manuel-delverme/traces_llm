@@ -1,7 +1,4 @@
 import collections
-import sys
-
-from stable_baselines3 import PPO
 
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -9,9 +6,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from stable_baselines3 import PPO
 from torch.utils.data import DataLoader, TensorDataset
 
-DEBUG = sys.gettrace() is not None
+DEBUG = False  # sys.gettrace() is not None
 
 
 class Hyperparameters:
@@ -30,9 +28,16 @@ TASK_KEY = "task"
 HISTORY_KEY = "history"
 
 
+def pad_traces(trace: np.ndarray) -> np.ndarray:
+    trace_with_padding = np.zeros((Hyperparameters.TRACE_LEN, Hyperparameters.TRACE_DIM))
+    trace_with_padding[-len(trace):] = trace
+    return trace_with_padding
+
+
 def samples_to_dataloader(traces: np.ndarray, labels: np.ndarray) -> DataLoader:
-    traces, labels = torch.FloatTensor(traces), torch.LongTensor(labels)
-    dataset = TensorDataset(traces, labels)
+    padded_traces = np.array([pad_traces(trace) for trace in traces])
+    padded_traces, labels = torch.FloatTensor(padded_traces), torch.LongTensor(labels)
+    dataset = TensorDataset(padded_traces, labels)
     return DataLoader(dataset, batch_size=Hyperparameters.BATCH_SIZE, shuffle=True)
 
 
@@ -85,6 +90,7 @@ class Decoder(nn.Module):
 def train_model(model, dataloader):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=Hyperparameters.SL_LEARNING_RATE)
+    accuracies = collections.deque([], maxlen=5)
 
     for epoch in range(Hyperparameters.EPOCHS):
         corrects = 0
@@ -98,8 +104,9 @@ def train_model(model, dataloader):
             loss.backward()
             optimizer.step()
         accuracy = corrects / total
+        accuracies.append(accuracy)
         print(f"Epoch {epoch}/{Hyperparameters.EPOCHS}, Loss: {loss.item():.4f}, accuracy: {accuracy}")
-        if accuracy > 0.99:
+        if len(accuracies) == accuracies.maxlen and all(a > 0.98 for a in accuracies):
             break
 
 
@@ -163,11 +170,12 @@ def run_rl_loop(env, agent) -> (DataLoader, PPO):
     agent.save("agent")
 
     traces, labels = deterministic_rollout(env, agent)
-    plot_trajectories(labels, traces)
-    return samples_to_dataloader(traces, labels), agent
+    dataloader = samples_to_dataloader(traces, labels)
+    return dataloader, agent
 
 
-def plot_trajectories(labels, traces):
+def plot_trajectories(dataloader, ts):
+    traces, labels = dataloader.dataset.tensors
     traces_by_label = [[] for d in set(labels)]
     for t, l in zip(traces, labels):
         traces_by_label[l].append(t)
@@ -181,10 +189,13 @@ def plot_trajectories(labels, traces):
                 kwargs["label"] = l
                 labeld.add(l)
             lines = np.array(ti)[:, :2]
-            lines += np.random.normal(0, 0.01, lines.shape)
+            # lines += np.random.normal(0, 0.001, lines.shape)
 
             plt.plot(*lines.T, **kwargs, alpha=0.1)
+    plt.xlim(-3, 3)
+    plt.ylim(-3, 3)
     plt.legend()
+    plt.title(f"step {ts}")
     plt.show()
 
 
@@ -203,13 +214,13 @@ def deterministic_rollout(env, agent):
 
             }
             action, _ = agent.predict(state_tensor)
-            xyz = state[HISTORY_KEY][-1].tolist() + [action[0, -1], ]
+            xyz = state[HISTORY_KEY][-1].tolist()  # + [action[0, -1], ]
             trace.append(xyz)
 
             new_state, reward, done, _, info = env.step(action.squeeze(0))
             state = new_state
 
-        xyz = state[HISTORY_KEY][-1].tolist() + [action[0, -1], ]
+        xyz = state[HISTORY_KEY][-1].tolist()  # + [action[0, -1], ]
         trace.append(xyz)
 
         traces.append(trace)
@@ -241,10 +252,15 @@ def main():
         agent2 = agent.load("agent")
         agent.set_parameters(agent2.get_parameters())
 
-    for _ in range(100):
+    plot_trajectories(dataloader, 0)
+
+    for t in range(100):
         train_model(discriminator, dataloader)
         env.decoder = discriminator
+
         dataloader, agent = run_rl_loop(env, agent)
+        Hyperparameters.NUM_RL_STEPS = 5_000
+        plot_trajectories(dataloader, t + 1)
 
 
 if __name__ == "__main__":
