@@ -1,4 +1,6 @@
 import collections
+import sys
+
 from stable_baselines3 import PPO
 
 import gymnasium as gym
@@ -9,17 +11,23 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
+DEBUG = sys.gettrace() is not None
+
 
 class Hyperparameters:
     NUM_CLASSES = 3
-    TRACE_LEN = 2
+    TRACE_LEN = 3
     TRACE_DIM = 2
     BATCH_SIZE = 32
     EPOCHS = 20
     SL_LEARNING_RATE = 0.001
     RL_LEARNING_RATE = 3e-4
-    NUM_RL_STEPS = 150_000
+    NUM_RL_STEPS = 100 if DEBUG else 50_000
     discount = 0.99
+
+
+TASK_KEY = "task"
+HISTORY_KEY = "history"
 
 
 def samples_to_dataloader(traces: np.ndarray, labels: np.ndarray) -> DataLoader:
@@ -29,21 +37,30 @@ def samples_to_dataloader(traces: np.ndarray, labels: np.ndarray) -> DataLoader:
 
 
 class TraceGenerator:
-    def __init__(self, num_samples=1000, noise_level=0.05):
+    def __init__(self, num_samples=1000, noise_level=0.05, trace_length=5):
         self.num_samples = num_samples
         self.noise_level = noise_level
+        self.trace_length = trace_length
 
     def generate(self):
-        traces, labels = [], []
-        for _ in range(self.num_samples // Hyperparameters.NUM_CLASSES):
-            noise = np.random.normal(0, self.noise_level, (2, 2))
-            traces.extend([
-                np.array([[0, 0], [0, 1]]) + noise,
-                np.array([[0, 0], [1, 0]]) + noise,
-                np.array([[0, 0], [1, 1]]) + noise
-            ])
-            labels.extend([0, 1, 2])
-        dataloader = samples_to_dataloader(traces, labels)
+        directions = np.array([[0, 1], [1, 0], [1, 1]])
+
+        steps = np.arange(0, self.trace_length)[None, :].repeat(2, 0)
+        prototypes = np.einsum("dt, sd -> std", steps, directions)
+
+        samples_per_class = self.num_samples // Hyperparameters.NUM_CLASSES
+
+        # AAA...BBBB...CCC
+        samples = np.repeat(prototypes, samples_per_class, 0)
+
+        noise = np.random.normal(0, self.noise_level, samples.shape)
+        # initial point is always 0
+        noise[:, 0, :] = 0.
+
+        noisy_samples = samples + noise
+        labels = np.repeat([0, 1, 2], samples_per_class)
+
+        dataloader = samples_to_dataloader(noisy_samples, labels)
         return dataloader
 
 
@@ -70,25 +87,33 @@ def train_model(model, dataloader):
     optimizer = optim.Adam(model.parameters(), lr=Hyperparameters.SL_LEARNING_RATE)
 
     for epoch in range(Hyperparameters.EPOCHS):
+        corrects = 0
+        total = 0
         for batch_idx, (data, target) in enumerate(dataloader):
             optimizer.zero_grad()
             output = model(data)
             loss = criterion(output, target)
+            corrects += (output.argmax(1) == target).sum()
+            total += len(target)
             loss.backward()
             optimizer.step()
-        print(f"Epoch {epoch}/{Hyperparameters.EPOCHS}, Loss: {loss.item():.4f}")
+        accuracy = corrects / total
+        print(f"Epoch {epoch}/{Hyperparameters.EPOCHS}, Loss: {loss.item():.4f}, accuracy: {accuracy}")
+        if accuracy > 0.99:
+            break
 
 
 class CustomHandwritingEnv(gym.Env):
     def __init__(self, decoder: nn.Module):
-        self.action_space_shape = (2,)
-        self.observation_space = gym.spaces.Box(
-            low=-1, high=1,
-            shape=(Hyperparameters.TRACE_LEN, Hyperparameters.TRACE_DIM)
-        )
-        self.action_space = gym.spaces.Box(
-            low=-1, high=1, shape=self.action_space_shape
-        )
+        self.action_space_shape = (Hyperparameters.TRACE_DIM + 1,)
+        self.observation_space = gym.spaces.Dict({
+            HISTORY_KEY: gym.spaces.Box(
+                low=-1, high=1,
+                shape=(Hyperparameters.TRACE_LEN, Hyperparameters.TRACE_DIM)
+            ),
+            TASK_KEY: gym.spaces.Discrete(Hyperparameters.NUM_CLASSES)
+        })
+        self.action_space = gym.spaces.Box(low=-1, high=1, shape=self.action_space_shape)
         self.decoder = decoder
         self.target_label = None
         self.points = None
@@ -96,21 +121,18 @@ class CustomHandwritingEnv(gym.Env):
         self.reset()
 
     def reset(self, **kwargs):
-        self.target_label = np.random.randint(0, Hyperparameters.NUM_CLASSES - 1)
-        self.points = collections.deque([np.array([0.0, 0.0])],
+        self.target_label = np.random.randint(0, Hyperparameters.NUM_CLASSES)
+        self.points = collections.deque([np.array([0.0, 0.0]), ] * Hyperparameters.TRACE_LEN,
                                         maxlen=Hyperparameters.TRACE_LEN)  # 1. Ensure float type
         self.episode_length = 0  # Reset episode length
-        return self.get_state(), {}
+        return self.get_state(), {TASK_KEY: self.target_label}
 
     def get_state(self):
-        # Last 5 points, zero-padded if fewer
-        state = np.zeros((Hyperparameters.TRACE_LEN, Hyperparameters.TRACE_DIM))
-        if len(self.points) > 0:
-            state[-len(self.points):] = np.array(self.points)
-        return state
+        return {HISTORY_KEY: np.array(self.points), TASK_KEY: self.target_label}
 
     def step(self, action):
         assert action.shape == self.action_space_shape
+        action, lift = action[:2], action[2]
         new_point = self.points[-1] + action
         self.points.append(new_point)
         self.episode_length += 1
@@ -121,41 +143,77 @@ class CustomHandwritingEnv(gym.Env):
             output = self.decoder(trace_tensor)
             pred_label = torch.argmax(output, dim=1).item()
 
-        reward = -1  # Penalty for each step
-        done = False
-        if pred_label == self.target_label:
-            reward = 10  # Reward for correct decoding
-            done = True  # End episode if correct decoding
-
-        if self.episode_length >= Hyperparameters.TRACE_LEN * 2:
+        done = lift > 0
+        if lift > 0:
+            if pred_label == self.target_label:
+                reward = 10  # Reward for correct decoding
+            else:
+                reward = -10
+        elif self.episode_length >= Hyperparameters.TRACE_LEN * 2:
+            reward = -10
             done = True
+        else:
+            reward = -1  # Penalty for each step
 
         return self.get_state(), reward, done, done, {}
 
 
-def run_rl_loop(discriminator: nn.Module) -> DataLoader:
-    env = CustomHandwritingEnv(discriminator)
-    agent = PPO("MlpPolicy", env, verbose=1, tensorboard_log="/tmp/fetch_reach_tensorboard/",
-                learning_rate=Hyperparameters.RL_LEARNING_RATE, gamma=Hyperparameters.discount)
+def run_rl_loop(env, agent) -> (DataLoader, PPO):
     agent.learn(total_timesteps=Hyperparameters.NUM_RL_STEPS)
+    agent.save("agent")
 
     traces, labels = deterministic_rollout(env, agent)
-    return samples_to_dataloader(traces, labels)
+    plot_trajectories(labels, traces)
+    return samples_to_dataloader(traces, labels), agent
+
+
+def plot_trajectories(labels, traces):
+    traces_by_label = [[] for d in set(labels)]
+    for t, l in zip(traces, labels):
+        traces_by_label[l].append(t)
+    labeld = set()
+    for l, t in enumerate(traces_by_label):
+        for ti in t:
+            c = ["r", "g", "b"][l]
+            style = ["dashed", "dashdot", "dotted"][l]
+            kwargs = dict(c=c, linestyle=style)
+            if l not in labeld:
+                kwargs["label"] = l
+                labeld.add(l)
+            lines = np.array(ti)[:, :2]
+            lines += np.random.normal(0, 0.01, lines.shape)
+
+            plt.plot(*lines.T, **kwargs, alpha=0.1)
+    plt.legend()
+    plt.show()
 
 
 def deterministic_rollout(env, agent):
     traces, labels = [], []
     for _ in range(100):
-        state = env.reset()
+        state, info = env.reset()
+        target_label = info[TASK_KEY]
         done = False
+        trace = []
+
         while not done:
-            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-            action_logprobs = agent(state_tensor).squeeze(0)
-            action = torch.argmax(action_logprobs, dim=1)
-            new_state, reward, done = env.step(action.numpy())
-            traces.append(state)
-            labels.append(env.target_label)
+            state_tensor = {
+                HISTORY_KEY: torch.tensor(state[HISTORY_KEY], dtype=torch.float32).unsqueeze(0),
+                TASK_KEY: torch.tensor(state[TASK_KEY], dtype=torch.long).unsqueeze(0)
+
+            }
+            action, _ = agent.predict(state_tensor)
+            xyz = state[HISTORY_KEY][-1].tolist() + [action[0, -1], ]
+            trace.append(xyz)
+
+            new_state, reward, done, _, info = env.step(action.squeeze(0))
             state = new_state
+
+        xyz = state[HISTORY_KEY][-1].tolist() + [action[0, -1], ]
+        trace.append(xyz)
+
+        traces.append(trace)
+        labels.append(target_label)
     return traces, labels
 
 
@@ -171,13 +229,22 @@ def plot_reward_history(episode, all_reward_history, rewards, labels):
 
 
 def main():
-    trace_gen = TraceGenerator()
+    trace_gen = TraceGenerator(trace_length=Hyperparameters.TRACE_LEN)
     dataloader = trace_gen.generate()
     discriminator = Decoder()
 
+    env = CustomHandwritingEnv(discriminator)
+    agent = PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="/tmp/fetch_reach_tensorboard/",
+                learning_rate=Hyperparameters.RL_LEARNING_RATE, gamma=Hyperparameters.discount)
+    if DEBUG:
+        # Load a good model to speed up for now
+        agent2 = agent.load("agent")
+        agent.set_parameters(agent2.get_parameters())
+
     for _ in range(100):
         train_model(discriminator, dataloader)
-        dataloader = run_rl_loop(discriminator)
+        env.decoder = discriminator
+        dataloader, agent = run_rl_loop(env, agent)
 
 
 if __name__ == "__main__":
