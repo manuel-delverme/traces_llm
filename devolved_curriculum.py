@@ -17,7 +17,7 @@ class Hyperparameters:
     TRACE_LEN = 3
     TRACE_DIM = 2
     BATCH_SIZE = 32
-    EPOCHS = 20
+    EPOCHS = 40
     SL_LEARNING_RATE = 0.001
     RL_LEARNING_RATE = 3e-4
     NUM_RL_STEPS = 100 if DEBUG else 50_000
@@ -108,6 +108,7 @@ def train_model(model, dataloader):
         print(f"Epoch {epoch}/{Hyperparameters.EPOCHS}, Loss: {loss.item():.4f}, accuracy: {accuracy}")
         if len(accuracies) == accuracies.maxlen and all(a > 0.98 for a in accuracies):
             break
+    return accuracies[-1]
 
 
 class CustomHandwritingEnv(gym.Env):
@@ -151,27 +152,29 @@ class CustomHandwritingEnv(gym.Env):
             pred_label = torch.argmax(output, dim=1).item()
 
         done = lift > 0
+        distance_moved = np.linalg.norm(action)
+
+        reward = 0
         if lift > 0:
             if pred_label == self.target_label:
-                reward = 10  # Reward for correct decoding
+                reward = 1
             else:
                 reward = -10
-        elif self.episode_length >= Hyperparameters.TRACE_LEN * 2:
-            reward = -10
+        elif self.episode_length >= Hyperparameters.TRACE_LEN - 1:
             done = True
-        else:
-            reward = -1  # Penalty for each step
+
+        reward -= distance_moved
 
         return self.get_state(), reward, done, done, {}
 
 
 def run_rl_loop(env, agent) -> (DataLoader, PPO):
-    agent.learn(total_timesteps=Hyperparameters.NUM_RL_STEPS)
+    agent.learn(total_timesteps=Hyperparameters.NUM_RL_STEPS, log_interval=20)
     agent.save("agent")
 
-    traces, labels = deterministic_rollout(env, agent)
+    traces, labels, reward = deterministic_rollout(env, agent)
     dataloader = samples_to_dataloader(traces, labels)
-    return dataloader, agent
+    return dataloader, agent, reward
 
 
 def plot_trajectories(dataloader, ts):
@@ -201,6 +204,7 @@ def plot_trajectories(dataloader, ts):
 
 def deterministic_rollout(env, agent):
     traces, labels = [], []
+    total_reward = 0.
     for _ in range(100):
         state, info = env.reset()
         target_label = info[TASK_KEY]
@@ -218,6 +222,7 @@ def deterministic_rollout(env, agent):
             trace.append(xyz)
 
             new_state, reward, done, _, info = env.step(action.squeeze(0))
+            total_reward += reward
             state = new_state
 
         xyz = state[HISTORY_KEY][-1].tolist()  # + [action[0, -1], ]
@@ -225,7 +230,7 @@ def deterministic_rollout(env, agent):
 
         traces.append(trace)
         labels.append(target_label)
-    return traces, labels
+    return traces, labels, total_reward
 
 
 def plot_reward_history(episode, all_reward_history, rewards, labels):
@@ -254,13 +259,22 @@ def main():
 
     plot_trajectories(dataloader, 0)
 
+    rewards = []
+    accuracies = []
+
     for t in range(100):
-        train_model(discriminator, dataloader)
+        accuracy = train_model(discriminator, dataloader)
+        accuracies.append(accuracy)
+
         env.decoder = discriminator
 
-        dataloader, agent = run_rl_loop(env, agent)
+        dataloader, agent, reward = run_rl_loop(env, agent)
+        rewards.append(reward)
         Hyperparameters.NUM_RL_STEPS = 5_000
         plot_trajectories(dataloader, t + 1)
+        if len(rewards) % 5 == 0 and rewards:
+            plt.plot(rewards)
+            plt.show()
 
 
 if __name__ == "__main__":
