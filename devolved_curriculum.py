@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from stable_baselines3 import PPO
+from stable_baselines3.common import callbacks as cb
 from torch.utils.data import DataLoader, TensorDataset
 
 DEBUG = False  # sys.gettrace() is not None
@@ -21,7 +22,7 @@ class Hyperparameters:
     SL_LEARNING_RATE = 0.001
     RL_LEARNING_RATE = 3e-4
     NUM_RL_STEPS = 100 if DEBUG else 50_000
-    discount = 0.99
+    discount = 0.9
 
 
 TASK_KEY = "task"
@@ -91,6 +92,7 @@ def train_model(model, dataloader):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=Hyperparameters.SL_LEARNING_RATE)
     accuracies = collections.deque([], maxlen=5)
+    print("Dataloader size", len(dataloader))
 
     for epoch in range(Hyperparameters.EPOCHS):
         corrects = 0
@@ -159,7 +161,7 @@ class CustomHandwritingEnv(gym.Env):
             if pred_label == self.target_label:
                 reward = 1
             else:
-                reward = -10
+                reward = -100
         elif self.episode_length >= Hyperparameters.TRACE_LEN - 1:
             done = True
 
@@ -169,7 +171,17 @@ class CustomHandwritingEnv(gym.Env):
 
 
 def run_rl_loop(env, agent) -> (DataLoader, PPO):
-    agent.learn(total_timesteps=Hyperparameters.NUM_RL_STEPS, log_interval=20)
+    callback_on_best = cb.StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
+    eval_callback = cb.EvalCallback(
+        env, callback_on_new_best=callback_on_best, verbose=1,
+        n_eval_episodes=1000,
+        eval_freq=max(Hyperparameters.NUM_RL_STEPS // 10, 1000)
+    )
+
+    # Almost infinite number of timesteps, but the training will stop
+    # early as soon as the reward threshold is reached
+    agent.learn(total_timesteps=Hyperparameters.NUM_RL_STEPS, log_interval=20, callback=eval_callback)
+
     agent.save("agent")
 
     traces, labels, reward = deterministic_rollout(env, agent)
